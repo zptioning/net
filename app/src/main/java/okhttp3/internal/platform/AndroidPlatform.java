@@ -179,7 +179,7 @@ class AndroidPlatform extends Platform {
     try {
       Class<?> sslParametersClass;
       try {
-        sslParametersClass = Class.forName("com.android.org.conscrypt.SSLParametersImpl");
+        sslParametersClass = Class.forName("org.conscrypt.SSLParametersImpl");
       } catch (ClassNotFoundException e) {
         // Older platform before being unbundled.
         sslParametersClass = Class.forName(
