@@ -15,8 +15,6 @@
  */
 package okhttp3;
 
-import android.util.Log;
-
 import java.io.Closeable;
 import java.io.File;
 import java.io.Flushable;
@@ -30,6 +28,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import javax.annotation.Nullable;
 import okhttp3.internal.Util;
 import okhttp3.internal.cache.CacheRequest;
 import okhttp3.internal.cache.CacheStrategy;
@@ -142,11 +141,11 @@ public final class Cache implements Closeable, Flushable {
   private static final int ENTRY_COUNT = 2;
 
   final InternalCache internalCache = new InternalCache() {
-    @Override public Response get(Request request) throws IOException {
+    @Override public @Nullable Response get(Request request) throws IOException {
       return Cache.this.get(request);
     }
 
-    @Override public CacheRequest put(Response response) throws IOException {
+    @Override public @Nullable CacheRequest put(Response response) throws IOException {
       return Cache.this.put(response);
     }
 
@@ -176,71 +175,55 @@ public final class Cache implements Closeable, Flushable {
   private int hitCount;
   private int requestCount;
 
+  /**
+   * Create a cache of at most {@code maxSize} bytes in {@code directory}.
+   */
   public Cache(File directory, long maxSize) {
     this(directory, maxSize, FileSystem.SYSTEM);
   }
 
   Cache(File directory, long maxSize, FileSystem fileSystem) {
     this.cache = DiskLruCache.create(fileSystem, directory, VERSION, ENTRY_COUNT, maxSize);
-    Log.i("wenfeng","new cache");
   }
 
   public static String key(HttpUrl url) {
     return ByteString.encodeUtf8(url.toString()).md5().hex();
   }
 
-    Response get(Request request) {
-        //获取url经过MD5和HEX的key
-        String key = key(request.url());
-        DiskLruCache.Snapshot snapshot;
-        Entry entry;
-        try {
-            //根据key来获取一个snapshot，由此可知我们的key-value里面的value对应的是snapshot
-            snapshot = cache.get(key);
-            if (snapshot == null) {
-                return null;
-            }
-        } catch (IOException e) {
-            // Give up because the cache cannot be read.
-            return null;
-        }
-        //利用前面的Snapshot创建一个Entry对象。
-        // 存储的内容是响应的Http数据包Header部分的数据。\
-        // snapshot.getSource得到的是一个Source对象 (source是okio里面的一个接口)
-        try {
-            entry = new Entry(snapshot.getSource(ENTRY_METADATA));
-        } catch (IOException e) {
-            Util.closeQuietly(snapshot);
-            return null;
-        }
-
-        //利用entry和snapshot得到Response对象，
-        // 该方法内部会利用前面的Entry和Snapshot得到响应的Http数据包Body
-        // （body的获取方式通过snapshot.getSource(ENTRY_BODY)得到）创建一个CacheResponseBody对象；
-        // 再利用该CacheResponseBody对象和第三步得到的Entry对象构建一个Response的对象，
-        // 这样该对象就包含了一个网络响应的全部数据了。
-        Response response = entry.response(snapshot);
-        //对request和Response进行比配检查，成功则返回该Response。
-        // 匹配方法就是url.equals(request.url().toString())
-        // && requestMethod.equals(request.method())
-        // && OkHeaders.varyMatches(response, varyHeaders, request);
-        // 其中Entry.url和Entry.requestMethod两个值在构建的时候就被初始化好了，
-        // 初始化值从命中的缓存中获取。因此该匹配方法就是将缓存的请求url和请求方法跟新的客户请求进行对比。
-        // 最后OkHeaders.varyMatches(response, varyHeaders, request)
-        // 是检查命中的缓存Http报头跟新的客户请求的Http报头中的键值对是否一样。如果全部结果为真，则返回命中的Response。
-        if (!entry.matches(request, response)) {
-            Util.closeQuietly(response.body());
-            return null;
-        }
-
-        return response;
+  @Nullable Response get(Request request) {
+    String key = key(request.url());
+    DiskLruCache.Snapshot snapshot;
+    Entry entry;
+    try {
+      snapshot = cache.get(key);
+      if (snapshot == null) {
+        return null;
+      }
+    } catch (IOException e) {
+      // Give up because the cache cannot be read.
+      return null;
     }
 
+    try {
+      entry = new Entry(snapshot.getSource(ENTRY_METADATA));
+    } catch (IOException e) {
+      Util.closeQuietly(snapshot);
+      return null;
+    }
 
-  CacheRequest put(Response response) {
+    Response response = entry.response(snapshot);
+
+    if (!entry.matches(request, response)) {
+      Util.closeQuietly(response.body());
+      return null;
+    }
+
+    return response;
+  }
+
+  @Nullable CacheRequest put(Response response) {
     String requestMethod = response.request().method();
-    //判断请求如果是"POST"、"PATCH"、"PUT"、"DELETE"、"MOVE"中的
-    // 任何一个则调用DiskLruCache.remove(urlToKey(request));将这个请求从缓存中移除出去。
+
     if (HttpMethod.invalidatesCache(response.request().method())) {
       try {
         remove(response.request());
@@ -249,33 +232,25 @@ public final class Cache implements Closeable, Flushable {
       }
       return null;
     }
-    //判断请求如果不是Get则不进行缓存，直接返回null。
-      // 官方给的解释是缓存get方法得到的Response效率高，其它方法的Response没有缓存效率低。
-      // 通常通过get方法获取到的数据都是固定不变的的，因此缓存效率自然就高了。
-      // 其它方法会根据请求报文参数的不同得到不同的Response，因此缓存效率自然而然就低了。
     if (!requestMethod.equals("GET")) {
       // Don't cache non-GET responses. We're technically allowed to cache
       // HEAD requests and some POST requests, but the complexity of doing
       // so is high and the benefit is low.
       return null;
     }
-    //判断请求中的http数据包中headers是否有符号"*"的通配符，有则不缓存直接返回null
+
     if (HttpHeaders.hasVaryAll(response)) {
       return null;
     }
-    //由Response对象构建一个Entry对象,Entry是Cache的一个内部类
+
     Entry entry = new Entry(response);
-    //通过调用DiskLruCache.edit();方法得到一个DiskLruCache.Editor对象。
     DiskLruCache.Editor editor = null;
     try {
       editor = cache.edit(key(response.request().url()));
       if (editor == null) {
         return null;
       }
-      //把这个entry写入
-      //方法内部是通过Okio.buffer(editor.newSink(ENTRY_METADATA));获取到一个BufferedSink对象，随后将Entry中存储的Http报头数据写入到sink流中。
       entry.writeTo(editor);
-      //构建一个CacheRequestImpl对象，构造器中通过editor.newSink(ENTRY_BODY)方法获得Sink对象
       return new CacheRequestImpl(editor);
     } catch (IOException e) {
       abortQuietly(editor);
@@ -283,31 +258,26 @@ public final class Cache implements Closeable, Flushable {
     }
   }
 
-
   void remove(Request request) throws IOException {
     cache.remove(key(request.url()));
   }
 
-    void update(Response cached, Response network) {
-        //用response构造一个Entry对象
-        Entry entry = new Entry(network);
-        //从命中缓存中获取到的DiskLruCache.Snapshot
-        DiskLruCache.Snapshot snapshot = ((CacheResponseBody) cached.body()).snapshot;
-        //从DiskLruCache.Snapshot获取DiskLruCache.Editor()对象
-        DiskLruCache.Editor editor = null;
-        try {
-            editor = snapshot.edit(); // Returns null if snapshot is not current.
-            if (editor != null) {
-                //将entry写入editor中
-                entry.writeTo(editor);
-                editor.commit();
-            }
-        } catch (IOException e) {
-            abortQuietly(editor);
-        }
+  void update(Response cached, Response network) {
+    Entry entry = new Entry(network);
+    DiskLruCache.Snapshot snapshot = ((CacheResponseBody) cached.body()).snapshot;
+    DiskLruCache.Editor editor = null;
+    try {
+      editor = snapshot.edit(); // Returns null if snapshot is not current.
+      if (editor != null) {
+        entry.writeTo(editor);
+        editor.commit();
+      }
+    } catch (IOException e) {
+      abortQuietly(editor);
     }
+  }
 
-  private void abortQuietly(DiskLruCache.Editor editor) {
+  private void abortQuietly(@Nullable DiskLruCache.Editor editor) {
     // Give up because the cache cannot be written.
     try {
       if (editor != null) {
@@ -361,7 +331,7 @@ public final class Cache implements Closeable, Flushable {
     return new Iterator<String>() {
       final Iterator<DiskLruCache.Snapshot> delegate = cache.snapshots();
 
-      String nextUrl;
+      @Nullable String nextUrl;
       boolean canRemove;
 
       @Override public boolean hasNext() {
@@ -369,16 +339,13 @@ public final class Cache implements Closeable, Flushable {
 
         canRemove = false; // Prevent delegate.remove() on the wrong item!
         while (delegate.hasNext()) {
-          DiskLruCache.Snapshot snapshot = delegate.next();
-          try {
+          try (DiskLruCache.Snapshot snapshot = delegate.next()) {
             BufferedSource metadata = Okio.buffer(snapshot.getSource(ENTRY_METADATA));
             nextUrl = metadata.readUtf8LineStrict();
             return true;
           } catch (IOException ignored) {
             // We couldn't read the metadata for this snapshot; possibly because the host filesystem
             // has disappeared! Skip it.
-          } finally {
-            snapshot.close();
           }
         }
 
@@ -412,6 +379,7 @@ public final class Cache implements Closeable, Flushable {
     return cache.size();
   }
 
+  /** Max size of the cache (in bytes). */
   public long maxSize() {
     return cache.getMaxSize();
   }
@@ -466,7 +434,7 @@ public final class Cache implements Closeable, Flushable {
     private Sink body;
     boolean done;
 
-    public CacheRequestImpl(final DiskLruCache.Editor editor) {
+    CacheRequestImpl(final DiskLruCache.Editor editor) {
       this.editor = editor;
       this.cacheOut = editor.newSink(ENTRY_BODY);
       this.body = new ForwardingSink(cacheOut) {
@@ -518,7 +486,7 @@ public final class Cache implements Closeable, Flushable {
     private final int code;
     private final String message;
     private final Headers responseHeaders;
-    private final Handshake handshake;
+    private final @Nullable Handshake handshake;
     private final long sentRequestMillis;
     private final long receivedResponseMillis;
 
@@ -570,7 +538,7 @@ public final class Cache implements Closeable, Flushable {
      * base64-encoded and appear each on their own line. A length of -1 is used to encode a null
      * array. The last line is optional. If present, it contains the TLS version.
      */
-    public Entry(Source in) throws IOException {
+    Entry(Source in) throws IOException {
       try {
         BufferedSource source = Okio.buffer(in);
         url = source.readUtf8LineStrict();
@@ -614,7 +582,7 @@ public final class Cache implements Closeable, Flushable {
           List<Certificate> localCertificates = readCertificateList(source);
           TlsVersion tlsVersion = !source.exhausted()
               ? TlsVersion.forJavaName(source.readUtf8LineStrict())
-              : null;
+              : TlsVersion.SSL_3_0;
           handshake = Handshake.get(tlsVersion, cipherSuite, peerCertificates, localCertificates);
         } else {
           handshake = null;
@@ -624,7 +592,7 @@ public final class Cache implements Closeable, Flushable {
       }
     }
 
-    public Entry(Response response) {
+    Entry(Response response) {
       this.url = response.request().url().toString();
       this.varyHeaders = HttpHeaders.varyHeaders(response);
       this.requestMethod = response.request().method();
@@ -678,11 +646,7 @@ public final class Cache implements Closeable, Flushable {
             .writeByte('\n');
         writeCertList(sink, handshake.peerCertificates());
         writeCertList(sink, handshake.localCertificates());
-        // The handshake’s TLS version is null on HttpsURLConnection and on older cached responses.
-        if (handshake.tlsVersion() != null) {
-          sink.writeUtf8(handshake.tlsVersion().javaName())
-              .writeByte('\n');
-        }
+        sink.writeUtf8(handshake.tlsVersion().javaName()).writeByte('\n');
       }
       sink.close();
     }
@@ -770,10 +734,10 @@ public final class Cache implements Closeable, Flushable {
   private static class CacheResponseBody extends ResponseBody {
     final DiskLruCache.Snapshot snapshot;
     private final BufferedSource bodySource;
-    private final String contentType;
-    private final String contentLength;
+    private final @Nullable String contentType;
+    private final @Nullable String contentLength;
 
-    public CacheResponseBody(final DiskLruCache.Snapshot snapshot,
+    CacheResponseBody(final DiskLruCache.Snapshot snapshot,
         String contentType, String contentLength) {
       this.snapshot = snapshot;
       this.contentType = contentType;

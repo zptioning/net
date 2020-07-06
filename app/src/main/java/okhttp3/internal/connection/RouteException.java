@@ -16,48 +16,33 @@
 package okhttp3.internal.connection;
 
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+
+import static okhttp3.internal.Util.addSuppressedIfPossible;
 
 /**
  * An exception thrown to indicate a problem connecting via a single Route. Multiple attempts may
  * have been made with alternative protocols, none of which were successful.
  */
 public final class RouteException extends RuntimeException {
-  private static final Method addSuppressedExceptionMethod;
-
-  static {
-    Method m;
-    try {
-      m = Throwable.class.getDeclaredMethod("addSuppressed", Throwable.class);
-    } catch (Exception e) {
-      m = null;
-    }
-    addSuppressedExceptionMethod = m;
-  }
-
+  private IOException firstException;
   private IOException lastException;
 
-  public RouteException(IOException cause) {
+  RouteException(IOException cause) {
     super(cause);
+    firstException = cause;
     lastException = cause;
+  }
+
+  public IOException getFirstConnectException() {
+    return firstException;
   }
 
   public IOException getLastConnectException() {
     return lastException;
   }
 
-  public void addConnectException(IOException e) {
-    addSuppressedIfPossible(e, lastException);
+  void addConnectException(IOException e) {
+    addSuppressedIfPossible(firstException, e);
     lastException = e;
-  }
-
-  private void addSuppressedIfPossible(IOException e, IOException suppressed) {
-    if (addSuppressedExceptionMethod != null) {
-      try {
-        addSuppressedExceptionMethod.invoke(e, suppressed);
-      } catch (InvocationTargetException | IllegalAccessException ignored) {
-      }
-    }
   }
 }

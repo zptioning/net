@@ -18,20 +18,19 @@ package okhttp3.internal.platform;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
+import javax.annotation.Nullable;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.X509TrustManager;
 import okhttp3.Protocol;
 
-/**
- * OpenJDK 9+.
- */
+/** OpenJDK 9+. */
 final class Jdk9Platform extends Platform {
   final Method setProtocolMethod;
   final Method getProtocolMethod;
 
-  public Jdk9Platform(Method setProtocolMethod, Method getProtocolMethod) {
+  Jdk9Platform(Method setProtocolMethod, Method getProtocolMethod) {
     this.setProtocolMethod = setProtocolMethod;
     this.getProtocolMethod = getProtocolMethod;
   }
@@ -49,12 +48,12 @@ final class Jdk9Platform extends Platform {
 
       sslSocket.setSSLParameters(sslParameters);
     } catch (IllegalAccessException | InvocationTargetException e) {
-      throw new AssertionError();
+      throw new AssertionError("failed to set SSL parameters", e);
     }
   }
 
   @Override
-  public String getSelectedProtocol(SSLSocket socket) {
+  public @Nullable String getSelectedProtocol(SSLSocket socket) {
     try {
       String protocol = (String) getProtocolMethod.invoke(socket);
 
@@ -65,8 +64,16 @@ final class Jdk9Platform extends Platform {
       }
 
       return protocol;
-    } catch (IllegalAccessException | InvocationTargetException e) {
-      throw new AssertionError();
+    } catch (InvocationTargetException e) {
+      if (e.getCause() instanceof UnsupportedOperationException) {
+        // Handle UnsupportedOperationException as it is defined in the getApplicationProtocol API.
+        // https://docs.oracle.com/javase/9/docs/api/javax/net/ssl/SSLSocket.html
+        return null;
+      }
+
+      throw new AssertionError("failed to get ALPN selected protocol", e);
+    } catch (IllegalAccessException e) {
+      throw new AssertionError("failed to get ALPN selected protocol", e);
     }
   }
 
@@ -80,7 +87,7 @@ final class Jdk9Platform extends Platform {
   }
 
   public static Jdk9Platform buildIfSupported() {
-    // Find JDK 9 new methods
+    // Find JDK 9 new methods, also present on JDK8 after build 252.
     try {
       Method setProtocolMethod =
           SSLParameters.class.getMethod("setApplicationProtocols", String[].class);

@@ -18,12 +18,12 @@ package okhttp3;
 import java.net.Proxy;
 import java.net.ProxySelector;
 import java.util.List;
+import java.util.Objects;
+import javax.annotation.Nullable;
 import javax.net.SocketFactory;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLSocketFactory;
 import okhttp3.internal.Util;
-
-import static okhttp3.internal.Util.equal;
 
 /**
  * A specification for a connection to an origin server. For simple connections, this is the
@@ -33,12 +33,6 @@ import static okhttp3.internal.Util.equal;
  * pinner.
  *
  * <p>HTTP requests that share the same {@code Address} may also share the same {@link Connection}.
- * 与服务器连接的格式，对于简单的链接，这里是服务器的主机名和端口号。
- * 如果是通过代理(Proxy)的链接，则包含代理信息(Proxy)。
- * 如果是安全链接，则还包括SSL socket Factory、hostname验证器，证书等。
- * 通过翻译大家可以理解为一个地址的包装类，封装了地址的所有可能，
- * 说白了address描述了建立连接的所有配置信息
- *
  */
 public final class Address {
   final HttpUrl url;
@@ -48,15 +42,16 @@ public final class Address {
   final List<Protocol> protocols;
   final List<ConnectionSpec> connectionSpecs;
   final ProxySelector proxySelector;
-  final Proxy proxy;
-  final SSLSocketFactory sslSocketFactory;
-  final HostnameVerifier hostnameVerifier;
-  final CertificatePinner certificatePinner;
+  final @Nullable Proxy proxy;
+  final @Nullable SSLSocketFactory sslSocketFactory;
+  final @Nullable HostnameVerifier hostnameVerifier;
+  final @Nullable CertificatePinner certificatePinner;
 
   public Address(String uriHost, int uriPort, Dns dns, SocketFactory socketFactory,
-      SSLSocketFactory sslSocketFactory, HostnameVerifier hostnameVerifier,
-      CertificatePinner certificatePinner, Authenticator proxyAuthenticator, Proxy proxy,
-      List<Protocol> protocols, List<ConnectionSpec> connectionSpecs, ProxySelector proxySelector) {
+      @Nullable SSLSocketFactory sslSocketFactory, @Nullable HostnameVerifier hostnameVerifier,
+      @Nullable CertificatePinner certificatePinner, Authenticator proxyAuthenticator,
+      @Nullable Proxy proxy, List<Protocol> protocols, List<ConnectionSpec> connectionSpecs,
+      ProxySelector proxySelector) {
     this.url = new HttpUrl.Builder()
         .scheme(sslSocketFactory != null ? "https" : "http")
         .host(uriHost)
@@ -136,49 +131,29 @@ public final class Address {
    * Returns this address's explicitly-specified HTTP proxy, or null to delegate to the {@linkplain
    * #proxySelector proxy selector}.
    */
-  public Proxy proxy() {
+  public @Nullable Proxy proxy() {
     return proxy;
   }
 
   /** Returns the SSL socket factory, or null if this is not an HTTPS address. */
-  public SSLSocketFactory sslSocketFactory() {
+  public @Nullable SSLSocketFactory sslSocketFactory() {
     return sslSocketFactory;
   }
 
   /** Returns the hostname verifier, or null if this is not an HTTPS address. */
-  public HostnameVerifier hostnameVerifier() {
+  public @Nullable HostnameVerifier hostnameVerifier() {
     return hostnameVerifier;
   }
 
   /** Returns this address's certificate pinner, or null if this is not an HTTPS address. */
-  public CertificatePinner certificatePinner() {
+  public @Nullable CertificatePinner certificatePinner() {
     return certificatePinner;
   }
 
-  /**
-   * 用来返回两个Address是否是同一个地址，
-   * 这个方法什么时候会被调用那，会在连接池复用的时候调用，
-   * 因为只有两个Address相同才能说明这两个连接的配置信息是一直的，
-   * 才能使用RealConnection的复用。看到方法内部大家发现，
-   * 这个"相同"的要求还是很严格的，必须所有配置信息都一直才可以。
-   * @param other
-   * @return
-   */
-  @Override public boolean equals(Object other) {
-    if (other instanceof Address) {
-      Address that = (Address) other;
-      return this.url.equals(that.url)
-          && this.dns.equals(that.dns)
-          && this.proxyAuthenticator.equals(that.proxyAuthenticator)
-          && this.protocols.equals(that.protocols)
-          && this.connectionSpecs.equals(that.connectionSpecs)
-          && this.proxySelector.equals(that.proxySelector)
-          && equal(this.proxy, that.proxy)
-          && equal(this.sslSocketFactory, that.sslSocketFactory)
-          && equal(this.hostnameVerifier, that.hostnameVerifier)
-          && equal(this.certificatePinner, that.certificatePinner);
-    }
-    return false;
+  @Override public boolean equals(@Nullable Object other) {
+    return other instanceof Address
+        && url.equals(((Address) other).url)
+        && equalsNonHost((Address) other);
   }
 
   @Override public int hashCode() {
@@ -189,11 +164,24 @@ public final class Address {
     result = 31 * result + protocols.hashCode();
     result = 31 * result + connectionSpecs.hashCode();
     result = 31 * result + proxySelector.hashCode();
-    result = 31 * result + (proxy != null ? proxy.hashCode() : 0);
-    result = 31 * result + (sslSocketFactory != null ? sslSocketFactory.hashCode() : 0);
-    result = 31 * result + (hostnameVerifier != null ? hostnameVerifier.hashCode() : 0);
-    result = 31 * result + (certificatePinner != null ? certificatePinner.hashCode() : 0);
+    result = 31 * result + Objects.hashCode(proxy);
+    result = 31 * result + Objects.hashCode(sslSocketFactory);
+    result = 31 * result + Objects.hashCode(hostnameVerifier);
+    result = 31 * result + Objects.hashCode(certificatePinner);
     return result;
+  }
+
+  boolean equalsNonHost(Address that) {
+    return this.dns.equals(that.dns)
+        && this.proxyAuthenticator.equals(that.proxyAuthenticator)
+        && this.protocols.equals(that.protocols)
+        && this.connectionSpecs.equals(that.connectionSpecs)
+        && this.proxySelector.equals(that.proxySelector)
+        && Objects.equals(this.proxy, that.proxy)
+        && Objects.equals(this.sslSocketFactory, that.sslSocketFactory)
+        && Objects.equals(this.hostnameVerifier, that.hostnameVerifier)
+        && Objects.equals(this.certificatePinner, that.certificatePinner)
+        && this.url().port() == that.url().port();
   }
 
   @Override public String toString() {

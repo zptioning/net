@@ -19,6 +19,8 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+import javax.annotation.Nullable;
+import okhttp3.internal.connection.Exchange;
 import okhttp3.internal.http.HttpHeaders;
 import okio.Buffer;
 import okio.BufferedSource;
@@ -44,16 +46,17 @@ public final class Response implements Closeable {
   final Protocol protocol;
   final int code;
   final String message;
-  final Handshake handshake;
+  final @Nullable Handshake handshake;
   final Headers headers;
-  final ResponseBody body;
-  final Response networkResponse;
-  final Response cacheResponse;
-  final Response priorResponse;
+  final @Nullable ResponseBody body;
+  final @Nullable Response networkResponse;
+  final @Nullable Response cacheResponse;
+  final @Nullable Response priorResponse;
   final long sentRequestAtMillis;
   final long receivedResponseAtMillis;
+  final @Nullable Exchange exchange;
 
-  private volatile CacheControl cacheControl; // Lazily initialized.
+  private volatile @Nullable CacheControl cacheControl; // Lazily initialized.
 
   Response(Builder builder) {
     this.request = builder.request;
@@ -68,6 +71,7 @@ public final class Response implements Closeable {
     this.priorResponse = builder.priorResponse;
     this.sentRequestAtMillis = builder.sentRequestAtMillis;
     this.receivedResponseAtMillis = builder.receivedResponseAtMillis;
+    this.exchange = builder.exchange;
   }
 
   /**
@@ -105,7 +109,7 @@ public final class Response implements Closeable {
     return code >= 200 && code < 300;
   }
 
-  /** Returns the HTTP status message or null if it is unknown. */
+  /** Returns the HTTP status message. */
   public String message() {
     return message;
   }
@@ -114,7 +118,7 @@ public final class Response implements Closeable {
    * Returns the TLS handshake of the connection that carried this response, or null if the response
    * was received without TLS.
    */
-  public Handshake handshake() {
+  public @Nullable Handshake handshake() {
     return handshake;
   }
 
@@ -122,17 +126,26 @@ public final class Response implements Closeable {
     return headers.values(name);
   }
 
-  public String header(String name) {
+  public @Nullable String header(String name) {
     return header(name, null);
   }
 
-  public String header(String name, String defaultValue) {
+  public @Nullable String header(String name, @Nullable String defaultValue) {
     String result = headers.get(name);
     return result != null ? result : defaultValue;
   }
 
   public Headers headers() {
     return headers;
+  }
+
+  /**
+   * Returns the trailers after the HTTP response, which may be empty. It is an error to call this
+   * before the entire HTTP response body has been consumed.
+   */
+  public Headers trailers() throws IOException {
+    if (exchange == null) throw new IllegalStateException("trailers not available");
+    return exchange.trailers();
   }
 
   /**
@@ -147,21 +160,11 @@ public final class Response implements Closeable {
    * applications should set a modest limit on {@code byteCount}, such as 1 MiB.
    */
   public ResponseBody peekBody(long byteCount) throws IOException {
-    BufferedSource source = body.source();
-    source.request(byteCount);
-    Buffer copy = source.buffer().clone();
-
-    // There may be more than byteCount bytes in source.buffer(). If there is, return a prefix.
-    Buffer result;
-    if (copy.size() > byteCount) {
-      result = new Buffer();
-      result.write(copy, byteCount);
-      copy.clear();
-    } else {
-      result = copy;
-    }
-
-    return ResponseBody.create(body.contentType(), result.size(), result);
+    BufferedSource peeked = body.source().peek();
+    Buffer buffer = new Buffer();
+    peeked.request(byteCount);
+    buffer.write(peeked, Math.min(byteCount, peeked.getBuffer().size()));
+    return ResponseBody.create(body.contentType(), buffer.size(), buffer);
   }
 
   /**
@@ -172,7 +175,7 @@ public final class Response implements Closeable {
    * <p>This always returns null on responses returned from {@link #cacheResponse}, {@link
    * #networkResponse}, and {@link #priorResponse()}.
    */
-  public ResponseBody body() {
+  public @Nullable ResponseBody body() {
     return body;
   }
 
@@ -200,7 +203,7 @@ public final class Response implements Closeable {
    * the network, such as when the response is fully cached. The body of the returned response
    * should not be read.
    */
-  public Response networkResponse() {
+  public @Nullable Response networkResponse() {
     return networkResponse;
   }
 
@@ -209,7 +212,7 @@ public final class Response implements Closeable {
    * cache. For conditional get requests the cache response and network response may both be
    * non-null. The body of the returned response should not be read.
    */
-  public Response cacheResponse() {
+  public @Nullable Response cacheResponse() {
     return cacheResponse;
   }
 
@@ -219,15 +222,20 @@ public final class Response implements Closeable {
    * returned response should not be read because it has already been consumed by the redirecting
    * client.
    */
-  public Response priorResponse() {
+  public @Nullable Response priorResponse() {
     return priorResponse;
   }
 
   /**
-   * Returns the authorization challenges appropriate for this response's code. If the response code
-   * is 401 unauthorized, this returns the "WWW-Authenticate" challenges. If the response code is
-   * 407 proxy unauthorized, this returns the "Proxy-Authenticate" challenges. Otherwise this
-   * returns an empty list of challenges.
+   * Returns the RFC 7235 authorization challenges appropriate for this response's code. If the
+   * response code is 401 unauthorized, this returns the "WWW-Authenticate" challenges. If the
+   * response code is 407 proxy unauthorized, this returns the "Proxy-Authenticate" challenges.
+   * Otherwise this returns an empty list of challenges.
+   *
+   * <p>If a challenge uses the {@code token68} variant instead of auth params, there is exactly one
+   * auth param in the challenge at key {@code null}. Invalid headers and challenges are ignored.
+   * No semantic validation is done, for example that {@code Basic} auth must have a {@code realm}
+   * auth param, this is up to the caller that interprets these challenges.
    */
   public List<Challenge> challenges() {
     String responseField;
@@ -268,8 +276,17 @@ public final class Response implements Closeable {
     return receivedResponseAtMillis;
   }
 
-  /** Closes the response body. Equivalent to {@code body().close()}. */
+  /**
+   * Closes the response body. Equivalent to {@code body().close()}.
+   *
+   * <p>It is an error to close a response that is not eligible for a body. This includes the
+   * responses returned from {@link #cacheResponse}, {@link #networkResponse}, and {@link
+   * #priorResponse()}.
+   */
   @Override public void close() {
+    if (body == null) {
+      throw new IllegalStateException("response is not eligible for a body and must not be closed");
+    }
     body.close();
   }
 
@@ -286,18 +303,19 @@ public final class Response implements Closeable {
   }
 
   public static class Builder {
-    Request request;
-    Protocol protocol;
+    @Nullable Request request;
+    @Nullable Protocol protocol;
     int code = -1;
     String message;
-    Handshake handshake;
+    @Nullable Handshake handshake;
     Headers.Builder headers;
-    ResponseBody body;
-    Response networkResponse;
-    Response cacheResponse;
-    Response priorResponse;
+    @Nullable ResponseBody body;
+    @Nullable Response networkResponse;
+    @Nullable Response cacheResponse;
+    @Nullable Response priorResponse;
     long sentRequestAtMillis;
     long receivedResponseAtMillis;
+    @Nullable Exchange exchange;
 
     public Builder() {
       headers = new Headers.Builder();
@@ -316,6 +334,7 @@ public final class Response implements Closeable {
       this.priorResponse = response.priorResponse;
       this.sentRequestAtMillis = response.sentRequestAtMillis;
       this.receivedResponseAtMillis = response.receivedResponseAtMillis;
+      this.exchange = response.exchange;
     }
 
     public Builder request(Request request) {
@@ -338,7 +357,7 @@ public final class Response implements Closeable {
       return this;
     }
 
-    public Builder handshake(Handshake handshake) {
+    public Builder handshake(@Nullable Handshake handshake) {
       this.handshake = handshake;
       return this;
     }
@@ -361,6 +380,7 @@ public final class Response implements Closeable {
       return this;
     }
 
+    /** Removes all headers named {@code name} on this builder. */
     public Builder removeHeader(String name) {
       headers.removeAll(name);
       return this;
@@ -372,18 +392,18 @@ public final class Response implements Closeable {
       return this;
     }
 
-    public Builder body(ResponseBody body) {
+    public Builder body(@Nullable ResponseBody body) {
       this.body = body;
       return this;
     }
 
-    public Builder networkResponse(Response networkResponse) {
+    public Builder networkResponse(@Nullable Response networkResponse) {
       if (networkResponse != null) checkSupportResponse("networkResponse", networkResponse);
       this.networkResponse = networkResponse;
       return this;
     }
 
-    public Builder cacheResponse(Response cacheResponse) {
+    public Builder cacheResponse(@Nullable Response cacheResponse) {
       if (cacheResponse != null) checkSupportResponse("cacheResponse", cacheResponse);
       this.cacheResponse = cacheResponse;
       return this;
@@ -401,7 +421,7 @@ public final class Response implements Closeable {
       }
     }
 
-    public Builder priorResponse(Response priorResponse) {
+    public Builder priorResponse(@Nullable Response priorResponse) {
       if (priorResponse != null) checkPriorResponse(priorResponse);
       this.priorResponse = priorResponse;
       return this;
@@ -423,10 +443,15 @@ public final class Response implements Closeable {
       return this;
     }
 
+    void initExchange(Exchange deferredTrailers) {
+      this.exchange = deferredTrailers;
+    }
+
     public Response build() {
       if (request == null) throw new IllegalStateException("request == null");
       if (protocol == null) throw new IllegalStateException("protocol == null");
       if (code < 0) throw new IllegalStateException("code < 0: " + code);
+      if (message == null) throw new IllegalStateException("message == null");
       return new Response(this);
     }
   }

@@ -15,10 +15,11 @@
  */
 package okhttp3;
 
+import javax.annotation.Nullable;
 import okio.ByteString;
 
 /**
- * A non-blocking interface to a web socket. Use the {@linkplain WebSocket.Factory factory} to
+ * A non-blocking interface to a web socket. Use the {@linkplain Factory factory} to
  * create instances; usually this is {@link OkHttpClient}.
  *
  * <h3>Web Socket Lifecycle</h3>
@@ -81,9 +82,9 @@ public interface WebSocket {
    * message.
    *
    * <p>This method returns true if the message was enqueued. Messages that would overflow the
-   * outgoing message buffer will be rejected and trigger a {@linkplain #close graceful shutdown} of
-   * this web socket. This method returns false in that case, and in any other case where this
-   * web socket is closing, closed, or canceled.
+   * outgoing message buffer (16 MiB) will be rejected and trigger a
+   * {@linkplain #close graceful shutdown} of this web socket. This method returns false in that
+   * case, and in any other case where this web socket is closing, closed, or canceled.
    *
    * <p>This method returns immediately.
    */
@@ -94,14 +95,15 @@ public interface WebSocket {
    * be transmitted before the close message is sent but subsequent calls to {@link #send} will
    * return false and their messages will not be enqueued.
    *
-   * <p>This returns true if a graceful shutdown was initiated by this call. It returns false and if
+   * <p>This returns true if a graceful shutdown was initiated by this call. It returns false if
    * a graceful shutdown was already underway or if the web socket is already closed or canceled.
    *
    * @param code Status code as defined by <a
-   * href="http://tools.ietf.org/html/rfc6455#section-7.4">Section 7.4 of RFC 6455</a> or {@code 0}.
+   * href="http://tools.ietf.org/html/rfc6455#section-7.4">Section 7.4 of RFC 6455</a>.
    * @param reason Reason for shutting down or {@code null}.
+   * @throws IllegalArgumentException if code is invalid.
    */
-  boolean close(int code, String reason);
+  boolean close(int code, @Nullable String reason);
 
   /**
    * Immediately and violently release resources held by this web socket, discarding any enqueued
@@ -110,6 +112,12 @@ public interface WebSocket {
   void cancel();
 
   interface Factory {
+    /**
+     * Creates a new web socket and immediately returns it. Creating a web socket initiates an
+     * asynchronous process to connect the socket. Once that succeeds or fails, {@code listener}
+     * will be notified. The caller must either close or cancel the returned web socket when it is
+     * no longer in use.
+     */
     WebSocket newWebSocket(Request request, WebSocketListener listener);
   }
 }

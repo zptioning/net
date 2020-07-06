@@ -17,6 +17,7 @@ package okhttp3;
 
 import java.net.InetSocketAddress;
 import java.net.Proxy;
+import javax.annotation.Nullable;
 
 /**
  * The concrete route used by a connection to reach an abstract origin server. When creating a
@@ -32,13 +33,6 @@ import java.net.Proxy;
  * </ul>
  *
  * <p>Each route is a specific selection of these options.
- *
- * 连接使用的路由到抽象服务器。创建连接时，客户端有很多选择
- * 1、HTTP proxy(http代理)：已经为客户端配置了一个专门的代理服务器，否则会通过net.ProxySelector proxy selector尝试多个代理
- * 2、IP address(ip地址)：无论是通过直连还是通过代理，DNS服务器可能会尝试多个ip地址。
- * 每一个路由都是上述路由的一种格式
- * 所以我的理解就是OkHttp3中抽象出来的Route是描述网络数据包传输的路径，最主要还是描述直接与其建立TCP连接的目标端点。
- *
  */
 public final class Route {
   final Address address;
@@ -81,36 +75,16 @@ public final class Route {
   /**
    * Returns true if this route tunnels HTTPS through an HTTP proxy. See <a
    * href="http://www.ietf.org/rfc/rfc2817.txt">RFC 2817, Section 5.2</a>.
-   * 即对于设置了HTTP代理，且安全的连接(SSL)需要请求代理服务器，
-   * 建立一个到目标HTTP服务器的隧道连接，客户端与HTTP代理建立TCP连接，
-   * 以此请求HTTP代理服务器在客户端与HTTP服务器之间进行数据的盲目转发
    */
   public boolean requiresTunnel() {
-    //是HTTP请求，但是还有SSL
     return address.sslSocketFactory != null && proxy.type() == Proxy.Type.HTTP;
   }
 
-  /**
-   * Route通过代理服务器的信息proxy,
-   * 及链接的目标地址Address来描述路由即Route，
-   * 连接的目标地址inetSocketAddress根据代理类型的不同而有着不同的含义，
-   * 这主要是通过不同代理协议的差异而造成的。对于无需代理的情况，
-   * 连接的目标地址inetSocketAddress中包含HTTP服务器经过DNS域名解析的IP地址以及协议端口号；
-   * 对于SOCKET代理其中包含HTTP服务器的域名及协议端口号；
-   * 对于HTTP代理，其中则包含代理服务器经过域名解析的IP地址及端口号。
-   *
-   * @param obj
-   * @return
-   */
-
-  @Override public boolean equals(Object obj) {
-    if (obj instanceof Route) {
-      Route other = (Route) obj;
-      return address.equals(other.address)
-          && proxy.equals(other.proxy)
-          && inetSocketAddress.equals(other.inetSocketAddress);
-    }
-    return false;
+  @Override public boolean equals(@Nullable Object other) {
+    return other instanceof Route
+        && ((Route) other).address.equals(address)
+        && ((Route) other).proxy.equals(proxy)
+        && ((Route) other).inetSocketAddress.equals(inetSocketAddress);
   }
 
   @Override public int hashCode() {

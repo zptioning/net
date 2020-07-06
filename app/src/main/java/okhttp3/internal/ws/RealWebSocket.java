@@ -18,6 +18,7 @@ package okhttp3.internal.ws;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.ProtocolException;
+import java.net.SocketTimeoutException;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.List;
@@ -26,8 +27,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import okhttp3.Call;
 import okhttp3.Callback;
+import okhttp3.EventListener;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
 import okhttp3.Request;
@@ -36,7 +39,7 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 import okhttp3.internal.Internal;
 import okhttp3.internal.Util;
-import okhttp3.internal.connection.StreamAllocation;
+import okhttp3.internal.connection.Exchange;
 import okio.BufferedSink;
 import okio.BufferedSource;
 import okio.ByteString;
@@ -70,6 +73,7 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
 
   final WebSocketListener listener;
   private final Random random;
+  private final long pingIntervalMillis;
   private final String key;
 
   /** Non-null for client web sockets. These can be canceled. */
@@ -123,32 +127,38 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
   /** True if this web socket failed and the listener has been notified. */
   private boolean failed;
 
-  /** For testing. */
-  int pingCount;
+  /** Total number of pings sent by this web socket. */
+  private int sentPingCount;
 
-  /** For testing. */
-  int pongCount;
+  /** Total number of pings received by this web socket. */
+  private int receivedPingCount;
 
-  public RealWebSocket(Request request, WebSocketListener listener, Random random) {
+  /** Total number of pongs received by this web socket. */
+  private int receivedPongCount;
+
+  /** True if we have sent a ping that is still awaiting a reply. */
+  private boolean awaitingPong;
+
+  public RealWebSocket(Request request, WebSocketListener listener, Random random,
+      long pingIntervalMillis) {
     if (!"GET".equals(request.method())) {
       throw new IllegalArgumentException("Request must be GET: " + request.method());
     }
     this.originalRequest = request;
     this.listener = listener;
     this.random = random;
+    this.pingIntervalMillis = pingIntervalMillis;
 
     byte[] nonce = new byte[16];
     random.nextBytes(nonce);
     this.key = ByteString.of(nonce).base64();
 
-    this.writerRunnable = new Runnable() {
-      @Override public void run() {
-        try {
-          while (writeOneFrame()) {
-          }
-        } catch (IOException e) {
-          failWebSocket(e, null);
+    this.writerRunnable = () -> {
+      try {
+        while (writeOneFrame()) {
         }
+      } catch (IOException e) {
+        failWebSocket(e, null);
       }
     };
   }
@@ -167,9 +177,9 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
 
   public void connect(OkHttpClient client) {
     client = client.newBuilder()
+        .eventListener(EventListener.NONE)
         .protocols(ONLY_HTTP1)
         .build();
-    final int pingIntervalMillis = client.pingIntervalMillis();
     final Request request = originalRequest.newBuilder()
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
@@ -179,25 +189,23 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
     call = Internal.instance.newWebSocketCall(client, request);
     call.enqueue(new Callback() {
       @Override public void onResponse(Call call, Response response) {
+        Exchange exchange = Internal.instance.exchange(response);
+        Streams streams;
         try {
-          checkResponse(response);
-        } catch (ProtocolException e) {
+          checkUpgradeSuccess(response, exchange);
+          streams = exchange.newWebSocketStreams();
+        } catch (IOException e) {
+          if (exchange != null) exchange.webSocketUpgradeFailed();
           failWebSocket(e, response);
           closeQuietly(response);
           return;
         }
 
-        // Promote the HTTP streams into web socket streams.
-        StreamAllocation streamAllocation = Internal.instance.streamAllocation(call);
-        streamAllocation.noNewStreams(); // Prevent connection pooling!
-        Streams streams = streamAllocation.connection().newWebSocketStreams(streamAllocation);
-
         // Process all web socket messages.
         try {
-          listener.onOpen(RealWebSocket.this, response);
           String name = "OkHttp WebSocket " + request.url().redact();
-          initReaderAndWriter(name, pingIntervalMillis, streams);
-          streamAllocation.connection().socket().setSoTimeout(0);
+          initReaderAndWriter(name, streams);
+          listener.onOpen(RealWebSocket.this, response);
           loopReader();
         } catch (Exception e) {
           failWebSocket(e, null);
@@ -210,7 +218,7 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
     });
   }
 
-  void checkResponse(Response response) throws ProtocolException {
+  void checkUpgradeSuccess(Response response, @Nullable Exchange exchange) throws IOException {
     if (response.code() != 101) {
       throw new ProtocolException("Expected HTTP 101 response but was '"
           + response.code() + " " + response.message() + "'");
@@ -235,10 +243,13 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
       throw new ProtocolException("Expected 'Sec-WebSocket-Accept' header value '"
           + acceptExpected + "' but was '" + headerAccept + "'");
     }
+
+    if (exchange == null) {
+      throw new ProtocolException("Web Socket exchange missing: bad interceptor?");
+    }
   }
 
-  public void initReaderAndWriter(
-      String name, long pingIntervalMillis, Streams streams) throws IOException {
+  public void initReaderAndWriter(String name, Streams streams) throws IOException {
     synchronized (this) {
       this.streams = streams;
       this.writer = new WebSocketWriter(streams.client, streams.sink, random);
@@ -295,12 +306,16 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
     executor.awaitTermination(10, TimeUnit.SECONDS);
   }
 
-  synchronized int pingCount() {
-    return pingCount;
+  synchronized int sentPingCount() {
+    return sentPingCount;
   }
 
-  synchronized int pongCount() {
-    return pongCount;
+  synchronized int receivedPingCount() {
+    return receivedPingCount;
+  }
+
+  synchronized int receivedPongCount() {
+    return receivedPongCount;
   }
 
   @Override public void onReadMessage(String text) throws IOException {
@@ -317,12 +332,13 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
 
     pongQueue.add(payload);
     runWriter();
-    pingCount++;
+    receivedPingCount++;
   }
 
   @Override public synchronized void onReadPong(ByteString buffer) {
     // This API doesn't expose pings.
-    pongCount++;
+    receivedPongCount++;
+    awaitingPong = false;
   }
 
   @Override public void onReadClose(int code, String reason) {
@@ -516,9 +532,20 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
 
   void writePingFrame() {
     WebSocketWriter writer;
+    int failedPing;
     synchronized (this) {
       if (failed) return;
       writer = this.writer;
+      failedPing = awaitingPong ? sentPingCount : -1;
+      sentPingCount++;
+      awaitingPong = true;
+    }
+
+    if (failedPing != -1) {
+      failWebSocket(new SocketTimeoutException("sent ping but didn't receive pong within "
+          + pingIntervalMillis + "ms (after " + (failedPing - 1) + " successful ping/pongs)"),
+          null);
+      return;
     }
 
     try {
@@ -528,7 +555,7 @@ public final class RealWebSocket implements WebSocket, WebSocketReader.FrameCall
     }
   }
 
-  public void failWebSocket(Exception e, Response response) {
+  public void failWebSocket(Exception e, @Nullable Response response) {
     Streams streamsToClose;
     synchronized (this) {
       if (failed) return; // Already failed.

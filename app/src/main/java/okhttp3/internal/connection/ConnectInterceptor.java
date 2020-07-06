@@ -21,7 +21,6 @@ import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
-import okhttp3.internal.http.HttpCodec;
 import okhttp3.internal.http.RealInterceptorChain;
 
 /** Opens a connection to the target server and proceeds to the next interceptor. */
@@ -35,13 +34,12 @@ public final class ConnectInterceptor implements Interceptor {
   @Override public Response intercept(Chain chain) throws IOException {
     RealInterceptorChain realChain = (RealInterceptorChain) chain;
     Request request = realChain.request();
-    StreamAllocation streamAllocation = realChain.streamAllocation();
+    Transmitter transmitter = realChain.transmitter();
 
     // We need the network to satisfy this request. Possibly for validating a conditional GET.
     boolean doExtensiveHealthChecks = !request.method().equals("GET");
-    HttpCodec httpCodec = streamAllocation.newStream(client, doExtensiveHealthChecks);
-    RealConnection connection = streamAllocation.connection();
+    Exchange exchange = transmitter.newExchange(chain, doExtensiveHealthChecks);
 
-    return realChain.proceed(request, streamAllocation, httpCodec, connection);
+    return realChain.proceed(request, transmitter, exchange);
   }
 }

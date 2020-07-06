@@ -24,11 +24,8 @@ import okhttp3.Route;
  * used so that OkHttp can learn from its mistakes: if there was a failure attempting to connect to
  * a specific IP address or proxy server, that failure is remembered and alternate routes are
  * preferred.
- * 当在创建与目标地址的链接时，
- * 为了避免重复出现路由故障而创建的黑名单，
- * 如果尝试链接特定的IP或者代理服务器最后失败了，将记住这些故障。
  */
-public final class RouteDatabase {
+final class RouteDatabase {
   private final Set<Route> failedRoutes = new LinkedHashSet<>();
 
   /** Records a failure connecting to {@code failedRoute}. */
@@ -36,7 +33,7 @@ public final class RouteDatabase {
     failedRoutes.add(failedRoute);
   }
 
-  /** Records success connecting to {@code failedRoute}. */
+  /** Records success connecting to {@code route}. */
   public synchronized void connected(Route route) {
     failedRoutes.remove(route);
   }

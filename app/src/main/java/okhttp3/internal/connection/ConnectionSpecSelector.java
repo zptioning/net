@@ -22,9 +22,9 @@ import java.net.UnknownServiceException;
 import java.security.cert.CertificateException;
 import java.util.Arrays;
 import java.util.List;
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLPeerUnverifiedException;
-import javax.net.ssl.SSLProtocolException;
 import javax.net.ssl.SSLSocket;
 import okhttp3.ConnectionSpec;
 import okhttp3.internal.Internal;
@@ -34,14 +34,13 @@ import okhttp3.internal.Internal;
  * handshake / protocol problem the connection may be retried with different protocols. Instances
  * are stateful and should be created and used for a single connection attempt.
  */
-public final class ConnectionSpecSelector {
-
+final class ConnectionSpecSelector {
   private final List<ConnectionSpec> connectionSpecs;
   private int nextModeIndex;
   private boolean isFallbackPossible;
   private boolean isFallback;
 
-  public ConnectionSpecSelector(List<ConnectionSpec> connectionSpecs) {
+  ConnectionSpecSelector(List<ConnectionSpec> connectionSpecs) {
     this.nextModeIndex = 0;
     this.connectionSpecs = connectionSpecs;
   }
@@ -52,7 +51,7 @@ public final class ConnectionSpecSelector {
    *
    * @throws IOException if the socket does not support any of the TLS modes available
    */
-  public ConnectionSpec configureSecureSocket(SSLSocket sslSocket) throws IOException {
+  ConnectionSpec configureSecureSocket(SSLSocket sslSocket) throws IOException {
     ConnectionSpec tlsConfiguration = null;
     for (int i = nextModeIndex, size = connectionSpecs.size(); i < size; i++) {
       ConnectionSpec connectionSpec = connectionSpecs.get(i);
@@ -87,7 +86,7 @@ public final class ConnectionSpecSelector {
    * @return {@code true} if the connection should be retried using {@link
    * #configureSecureSocket(SSLSocket)} or {@code false} if not
    */
-  public boolean connectionFailed(IOException e) {
+  boolean connectionFailed(IOException e) {
     // Any future attempt to connect using this strategy will be a fallback attempt.
     isFallback = true;
 
@@ -110,8 +109,7 @@ public final class ConnectionSpecSelector {
     // Look for known client-side or negotiation errors that are unlikely to be fixed by trying
     // again with a different connection spec.
     if (e instanceof SSLHandshakeException) {
-      // If the problem was a CertificateException from the X509TrustManager,
-      // do not retry.
+      // If the problem was a CertificateException from the X509TrustManager, do not retry.
       if (e.getCause() instanceof CertificateException) {
         return false;
       }
@@ -121,9 +119,8 @@ public final class ConnectionSpecSelector {
       return false;
     }
 
-    // On Android, SSLProtocolExceptions can be caused by TLS_FALLBACK_SCSV failures, which means we
-    // retry those when we probably should not.
-    return (e instanceof SSLHandshakeException || e instanceof SSLProtocolException);
+    // Retry for all other SSL failures.
+    return e instanceof SSLException;
   }
 
   /**

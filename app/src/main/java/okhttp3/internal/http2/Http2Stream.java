@@ -19,8 +19,12 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.SocketTimeoutException;
-import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
+import javax.annotation.Nullable;
+import okhttp3.Headers;
+import okhttp3.internal.Util;
 import okio.AsyncTimeout;
 import okio.Buffer;
 import okio.BufferedSource;
@@ -51,11 +55,11 @@ public final class Http2Stream {
   final int id;
   final Http2Connection connection;
 
-  /** Request headers. Immutable and non null. */
-  private final List<Header> requestHeaders;
-
-  /** Response headers yet to be {@linkplain #takeResponseHeaders taken}. */
-  private List<Header> responseHeaders;
+  /**
+   * Received headers yet to be {@linkplain #takeHeaders taken}, or {@linkplain FramingSource#read
+   * read}.
+   */
+  private final Deque<Headers> headersQueue = new ArrayDeque<>();
 
   /** True if response headers have been sent or received. */
   private boolean hasResponseHeaders;
@@ -70,12 +74,15 @@ public final class Http2Stream {
    * close this stream (such as both peers closing it near-simultaneously) then this is the first
    * reason known to this peer.
    */
-  ErrorCode errorCode = null;
+  @Nullable ErrorCode errorCode;
+
+  /** The exception that explains {@code errorCode}. Null if no exception was provided. */
+  @Nullable IOException errorException;
 
   Http2Stream(int id, Http2Connection connection, boolean outFinished, boolean inFinished,
-      List<Header> requestHeaders) {
+      @Nullable Headers headers) {
     if (connection == null) throw new NullPointerException("connection == null");
-    if (requestHeaders == null) throw new NullPointerException("requestHeaders == null");
+
     this.id = id;
     this.connection = connection;
     this.bytesLeftInWriteWindow =
@@ -84,7 +91,15 @@ public final class Http2Stream {
     this.sink = new FramingSink();
     this.source.finished = inFinished;
     this.sink.finished = outFinished;
-    this.requestHeaders = requestHeaders;
+    if (headers != null) {
+      headersQueue.add(headers);
+    }
+
+    if (isLocallyInitiated() && headers != null) {
+      throw new IllegalStateException("locally-initiated streams shouldn't have headers yet");
+    } else if (!isLocallyInitiated() && headers == null) {
+      throw new IllegalStateException("remotely-initiated streams should have headers");
+    }
   }
 
   public int getId() {
@@ -124,33 +139,38 @@ public final class Http2Stream {
     return connection;
   }
 
-  public List<Header> getRequestHeaders() {
-    return requestHeaders;
-  }
-
   /**
    * Removes and returns the stream's received response headers, blocking if necessary until headers
    * have been received. If the returned list contains multiple blocks of headers the blocks will be
    * delimited by 'null'.
    */
-  public synchronized List<Header> takeResponseHeaders() throws IOException {
-    if (!isLocallyInitiated()) {
-      throw new IllegalStateException("servers cannot read response headers");
-    }
+  public synchronized Headers takeHeaders() throws IOException {
     readTimeout.enter();
     try {
-      while (responseHeaders == null && errorCode == null) {
+      while (headersQueue.isEmpty() && errorCode == null) {
         waitForIo();
       }
     } finally {
       readTimeout.exitAndThrowIfTimedOut();
     }
-    List<Header> result = responseHeaders;
-    if (result != null) {
-      responseHeaders = null;
-      return result;
+    if (!headersQueue.isEmpty()) {
+      return headersQueue.removeFirst();
     }
-    throw new StreamResetException(errorCode);
+    throw errorException != null ? errorException : new StreamResetException(errorCode);
+  }
+
+  /**
+   * Returns the trailers. It is only safe to call this once the source stream has been completely
+   * exhausted.
+   */
+  public synchronized Headers trailers() throws IOException {
+    if (errorCode != null) {
+      throw errorException != null ? errorException : new StreamResetException(errorCode);
+    }
+    if (!source.finished || !source.receiveBuffer.exhausted() || !source.readBuffer.exhausted()) {
+      throw new IllegalStateException("too early; can't read the trailers yet");
+    }
+    return source.trailers != null ? source.trailers : Util.EMPTY_HEADERS;
   }
 
   /**
@@ -164,26 +184,44 @@ public final class Http2Stream {
   /**
    * Sends a reply to an incoming stream.
    *
-   * @param out true to create an output stream that we can use to send data to the remote peer.
-   * Corresponds to {@code FLAG_FIN}.
+   * @param outFinished true to eagerly finish the output stream to send data to the remote peer.
+   *     Corresponds to {@code FLAG_FIN}.
+   * @param flushHeaders true to force flush the response headers. This should be true unless the
+   *     response body exists and will be written immediately.
    */
-  public void sendResponseHeaders(List<Header> responseHeaders, boolean out) throws IOException {
+  public void writeHeaders(List<Header> responseHeaders, boolean outFinished, boolean flushHeaders)
+      throws IOException {
     assert (!Thread.holdsLock(Http2Stream.this));
     if (responseHeaders == null) {
-      throw new NullPointerException("responseHeaders == null");
+      throw new NullPointerException("headers == null");
     }
-    boolean outFinished = false;
     synchronized (this) {
       this.hasResponseHeaders = true;
-      if (!out) {
+      if (outFinished) {
         this.sink.finished = true;
-        outFinished = true;
       }
     }
-    connection.writeSynReply(id, outFinished, responseHeaders);
 
-    if (outFinished) {
+    // Only DATA frames are subject to flow-control. Transmit the HEADER frame if the connection
+    // flow-control window is fully depleted.
+    if (!flushHeaders) {
+      synchronized (connection) {
+        flushHeaders = connection.bytesLeftInWriteWindow == 0L;
+      }
+    }
+
+    connection.writeHeaders(id, outFinished, responseHeaders);
+
+    if (flushHeaders) {
       connection.flush();
+    }
+  }
+
+  public void enqueueTrailers(Headers trailers) {
+    synchronized (this) {
+      if (sink.finished) throw new IllegalStateException("already finished");
+      if (trailers.size() == 0) throw new IllegalArgumentException("trailers.size() == 0");
+      this.sink.trailers = trailers;
     }
   }
 
@@ -204,7 +242,7 @@ public final class Http2Stream {
    * Returns a sink that can be used to write data to the peer.
    *
    * @throws IllegalStateException if this stream was initiated by the peer and a {@link
-   * #sendResponseHeaders} has not yet been sent.
+   *     #writeHeaders} has not yet been sent.
    */
   public Sink getSink() {
     synchronized (this) {
@@ -219,8 +257,9 @@ public final class Http2Stream {
    * Abnormally terminate this stream. This blocks until the {@code RST_STREAM} frame has been
    * transmitted.
    */
-  public void close(ErrorCode rstStatusCode) throws IOException {
-    if (!closeInternal(rstStatusCode)) {
+  public void close(ErrorCode rstStatusCode, @Nullable IOException errorException)
+      throws IOException {
+    if (!closeInternal(rstStatusCode, errorException)) {
       return; // Already closed.
     }
     connection.writeSynReset(id, rstStatusCode);
@@ -231,14 +270,14 @@ public final class Http2Stream {
    * immediately.
    */
   public void closeLater(ErrorCode errorCode) {
-    if (!closeInternal(errorCode)) {
+    if (!closeInternal(errorCode, null)) {
       return; // Already closed.
     }
     connection.writeSynResetLater(id, errorCode);
   }
 
   /** Returns true if this stream was closed. */
-  private boolean closeInternal(ErrorCode errorCode) {
+  private boolean closeInternal(ErrorCode errorCode, @Nullable IOException errorException) {
     assert (!Thread.holdsLock(this));
     synchronized (this) {
       if (this.errorCode != null) {
@@ -248,32 +287,11 @@ public final class Http2Stream {
         return false;
       }
       this.errorCode = errorCode;
+      this.errorException = errorException;
       notifyAll();
     }
     connection.removeStream(id);
     return true;
-  }
-
-  void receiveHeaders(List<Header> headers) {
-    assert (!Thread.holdsLock(Http2Stream.this));
-    boolean open = true;
-    synchronized (this) {
-      hasResponseHeaders = true;
-      if (responseHeaders == null) {
-        responseHeaders = headers;
-        open = isOpen();
-        notifyAll();
-      } else {
-        List<Header> newHeaders = new ArrayList<>();
-        newHeaders.addAll(responseHeaders);
-        newHeaders.add(null); // Delimit separate blocks of headers with null.
-        newHeaders.addAll(headers);
-        this.responseHeaders = newHeaders;
-      }
-    }
-    if (!open) {
-      connection.removeStream(id);
-    }
   }
 
   void receiveData(BufferedSource in, int length) throws IOException {
@@ -281,11 +299,23 @@ public final class Http2Stream {
     this.source.receive(in, length);
   }
 
-  void receiveFin() {
+  /**
+   * Accept headers from the network and store them until the client calls {@link #takeHeaders}, or
+   * {@link FramingSource#read} them.
+   */
+  void receiveHeaders(Headers headers, boolean inFinished) {
     assert (!Thread.holdsLock(Http2Stream.this));
     boolean open;
     synchronized (this) {
-      this.source.finished = true;
+      if (!hasResponseHeaders || !inFinished) {
+        hasResponseHeaders = true;
+        headersQueue.add(headers);
+      } else {
+        this.source.trailers = headers;
+      }
+      if (inFinished) {
+        this.source.finished = true;
+      }
       open = isOpen();
       notifyAll();
     }
@@ -316,6 +346,12 @@ public final class Http2Stream {
     /** Maximum number of bytes to buffer before reporting a flow control error. */
     private final long maxByteCount;
 
+    /**
+     * Received trailers. Null unless the server has provided trailers. Undefined until the stream
+     * is exhausted. Guarded by Http2Stream.this.
+     */
+    private Headers trailers;
+
     /** True if the caller has closed this stream. */
     boolean closed;
 
@@ -332,49 +368,77 @@ public final class Http2Stream {
     @Override public long read(Buffer sink, long byteCount) throws IOException {
       if (byteCount < 0) throw new IllegalArgumentException("byteCount < 0: " + byteCount);
 
-      long read;
-      synchronized (Http2Stream.this) {
-        waitUntilReadable();
-        checkNotClosed();
-        if (readBuffer.size() == 0) return -1; // This source is exhausted.
+      while (true) {
+        long readBytesDelivered = -1;
+        IOException errorExceptionToDeliver = null;
 
-        // Move bytes from the read buffer into the caller's buffer.
-        read = readBuffer.read(sink, Math.min(byteCount, readBuffer.size()));
+        // 1. Decide what to do in a synchronized block.
 
-        // Flow control: notify the peer that we're ready for more data!
-        unacknowledgedBytesRead += read;
-        if (unacknowledgedBytesRead
-            >= connection.okHttpSettings.getInitialWindowSize() / 2) {
-          connection.writeWindowUpdateLater(id, unacknowledgedBytesRead);
-          unacknowledgedBytesRead = 0;
+        synchronized (Http2Stream.this) {
+          readTimeout.enter();
+          try {
+            if (errorCode != null) {
+              // Prepare to deliver an error.
+              errorExceptionToDeliver = errorException != null
+                  ? errorException
+                  : new StreamResetException(errorCode);
+            }
+
+            if (closed) {
+              throw new IOException("stream closed");
+
+            } else if (readBuffer.size() > 0) {
+              // Prepare to read bytes. Start by moving them to the caller's buffer.
+              readBytesDelivered = readBuffer.read(sink, Math.min(byteCount, readBuffer.size()));
+              unacknowledgedBytesRead += readBytesDelivered;
+
+              if (errorExceptionToDeliver == null
+                  && unacknowledgedBytesRead
+                  >= connection.okHttpSettings.getInitialWindowSize() / 2) {
+                // Flow control: notify the peer that we're ready for more data! Only send a
+                // WINDOW_UPDATE if the stream isn't in error.
+                connection.writeWindowUpdateLater(id, unacknowledgedBytesRead);
+                unacknowledgedBytesRead = 0;
+              }
+            } else if (!finished && errorExceptionToDeliver == null) {
+              // Nothing to do. Wait until that changes then try again.
+              waitForIo();
+              continue;
+            }
+          } finally {
+            readTimeout.exitAndThrowIfTimedOut();
+          }
         }
-      }
 
-      // Update connection.unacknowledgedBytesRead outside the stream lock.
-      synchronized (connection) { // Multiple application threads may hit this section.
-        connection.unacknowledgedBytesRead += read;
-        if (connection.unacknowledgedBytesRead
-            >= connection.okHttpSettings.getInitialWindowSize() / 2) {
-          connection.writeWindowUpdateLater(0, connection.unacknowledgedBytesRead);
-          connection.unacknowledgedBytesRead = 0;
+        // 2. Do it outside of the synchronized block and timeout.
+
+        if (readBytesDelivered != -1) {
+          // Update connection.unacknowledgedBytesRead outside the synchronized block.
+          updateConnectionFlowControl(readBytesDelivered);
+          return readBytesDelivered;
         }
-      }
 
-      return read;
+        if (errorExceptionToDeliver != null) {
+          // We defer throwing the exception until now so that we can refill the connection
+          // flow-control window. This is necessary because we don't transmit window updates until
+          // the application reads the data. If we throw this prior to updating the connection
+          // flow-control window, we risk having it go to 0 preventing the server from sending data.
+          throw errorExceptionToDeliver;
+        }
+
+        return -1; // This source is exhausted.
+      }
     }
 
-    /** Returns once the source is either readable or finished. */
-    private void waitUntilReadable() throws IOException {
-      readTimeout.enter();
-      try {
-        while (readBuffer.size() == 0 && !finished && !closed && errorCode == null) {
-          waitForIo();
-        }
-      } finally {
-        readTimeout.exitAndThrowIfTimedOut();
-      }
+    private void updateConnectionFlowControl(long read) {
+      assert (!Thread.holdsLock(Http2Stream.this));
+      connection.updateConnectionFlowControl(read);
     }
 
+    /**
+     * Accept bytes on the connection's reader thread. This function avoids holding locks while it
+     * performs blocking reads for the incoming bytes.
+     */
     void receive(BufferedSource in, long byteCount) throws IOException {
       assert (!Thread.holdsLock(Http2Stream.this));
 
@@ -404,13 +468,24 @@ public final class Http2Stream {
         if (read == -1) throw new EOFException();
         byteCount -= read;
 
-        // Move the received data to the read buffer to the reader can read it.
+        // Move the received data to the read buffer to the reader can read it. If this source has
+        // been closed since this read began we must discard the incoming data and tell the
+        // connection we've done so.
+        long bytesDiscarded = 0L;
         synchronized (Http2Stream.this) {
-          boolean wasEmpty = readBuffer.size() == 0;
-          readBuffer.writeAll(receiveBuffer);
-          if (wasEmpty) {
-            Http2Stream.this.notifyAll();
+          if (closed) {
+            bytesDiscarded = receiveBuffer.size();
+            receiveBuffer.clear();
+          } else {
+            boolean wasEmpty = readBuffer.size() == 0;
+            readBuffer.writeAll(receiveBuffer);
+            if (wasEmpty) {
+              Http2Stream.this.notifyAll();
+            }
           }
+        }
+        if (bytesDiscarded > 0L) {
+          updateConnectionFlowControl(bytesDiscarded);
         }
       }
     }
@@ -420,21 +495,17 @@ public final class Http2Stream {
     }
 
     @Override public void close() throws IOException {
+      long bytesDiscarded;
       synchronized (Http2Stream.this) {
         closed = true;
+        bytesDiscarded = readBuffer.size();
         readBuffer.clear();
-        Http2Stream.this.notifyAll();
+        Http2Stream.this.notifyAll(); // TODO(jwilson): Unnecessary?
+      }
+      if (bytesDiscarded > 0) {
+        updateConnectionFlowControl(bytesDiscarded);
       }
       cancelStreamIfNecessary();
-    }
-
-    private void checkNotClosed() throws IOException {
-      if (closed) {
-        throw new IOException("stream closed");
-      }
-      if (errorCode != null) {
-        throw new StreamResetException(errorCode);
-      }
     }
   }
 
@@ -451,7 +522,7 @@ public final class Http2Stream {
       // is safe because the input stream is closed (we won't use any
       // further bytes) and the output stream is either finished or closed
       // (so RSTing both streams doesn't cause harm).
-      Http2Stream.this.close(ErrorCode.CANCEL);
+      Http2Stream.this.close(ErrorCode.CANCEL, null);
     } else if (!open) {
       connection.removeStream(id);
     }
@@ -466,6 +537,9 @@ public final class Http2Stream {
      * written to the outgoing connection. Batching saves the (small) framing overhead.
      */
     private final Buffer sendBuffer = new Buffer();
+
+    /** Trailers to send at the end of the stream. */
+    private Headers trailers;
 
     boolean closed;
 
@@ -486,7 +560,7 @@ public final class Http2Stream {
      * Emit a single data frame to the connection. The frame's size be limited by this stream's
      * write window. This method will block until the write window is nonempty.
      */
-    private void emitFrame(boolean outFinished) throws IOException {
+    private void emitFrame(boolean outFinishedOnLastFrame) throws IOException {
       long toWrite;
       synchronized (Http2Stream.this) {
         writeTimeout.enter();
@@ -505,7 +579,8 @@ public final class Http2Stream {
 
       writeTimeout.enter();
       try {
-        connection.writeData(id, outFinished && toWrite == sendBuffer.size(), sendBuffer, toWrite);
+        boolean outFinished = outFinishedOnLastFrame && toWrite == sendBuffer.size();
+        connection.writeData(id, outFinished, sendBuffer, toWrite);
       } finally {
         writeTimeout.exitAndThrowIfTimedOut();
       }
@@ -532,13 +607,21 @@ public final class Http2Stream {
         if (closed) return;
       }
       if (!sink.finished) {
-        // Emit the remaining data, setting the END_STREAM flag on the last frame.
-        if (sendBuffer.size() > 0) {
+        // We have 0 or more frames of data, and 0 or more frames of trailers. We need to send at
+        // least one frame with the END_STREAM flag set. That must be the last frame, and the
+        // trailers must be sent after all of the data.
+        boolean hasData = sendBuffer.size() > 0;
+        boolean hasTrailers = trailers != null;
+        if (hasTrailers) {
+          while (sendBuffer.size() > 0) {
+            emitFrame(false);
+          }
+          connection.writeHeaders(id, true, Util.toHeaderBlock(trailers));
+        } else if (hasData) {
           while (sendBuffer.size() > 0) {
             emitFrame(true);
           }
         } else {
-          // Send an empty frame just so we can set the END_STREAM flag.
           connection.writeData(id, true, null, 0);
         }
       }
@@ -564,7 +647,7 @@ public final class Http2Stream {
     } else if (sink.finished) {
       throw new IOException("stream finished");
     } else if (errorCode != null) {
-      throw new StreamResetException(errorCode);
+      throw errorException != null ? errorException : new StreamResetException(errorCode);
     }
   }
 
@@ -576,6 +659,7 @@ public final class Http2Stream {
     try {
       wait();
     } catch (InterruptedException e) {
+      Thread.currentThread().interrupt(); // Retain interrupted status.
       throw new InterruptedIOException();
     }
   }
@@ -587,6 +671,7 @@ public final class Http2Stream {
   class StreamTimeout extends AsyncTimeout {
     @Override protected void timedOut() {
       closeLater(ErrorCode.CANCEL);
+      connection.sendDegradedPingLater();
     }
 
     @Override protected IOException newTimeoutException(IOException cause) {

@@ -1,14 +1,29 @@
+/*
+ * Copyright (C) 2019 Square, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package okhttp3;
 
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import okhttp3.internal.http.HttpHeaders;
 
 /**
  * A Cache-Control header with cache directives from a server or client. These directives set policy
  * on what responses can be stored, and which requests can be satisfied by those stored responses.
  *
- * <p>See <a href="http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9">RFC 2616,
- * 14.9</a>.
+ * <p>See <a href="https://tools.ietf.org/html/rfc7234#section-5.2">RFC 7234, 5.2</a>.
  */
 public final class CacheControl {
   /**
@@ -27,10 +42,7 @@ public final class CacheControl {
       .maxStale(Integer.MAX_VALUE, TimeUnit.SECONDS)
       .build();
 
-  /*对应于“no-cache”，如果出现在 响应 的头部，不是表示不允许对响应进行缓存，而是表示客户端需要与服务器进行再次验证，
-  进行一个额外的GET请求得到最新的响应；如果出现请求头部，则表示不适用缓存响应，即记性网络请求获取响应。*/
   private final boolean noCache;
-  /*对应于"no-store"，如果出现在响应头部，则表明该响应不能被缓存*/
   private final boolean noStore;
   private final int maxAgeSeconds;
   private final int sMaxAgeSeconds;
@@ -41,12 +53,14 @@ public final class CacheControl {
   private final int minFreshSeconds;
   private final boolean onlyIfCached;
   private final boolean noTransform;
+  private final boolean immutable;
 
-  String headerValue; // Lazily computed, null if absent.
+  @Nullable String headerValue; // Lazily computed, null if absent.
 
   private CacheControl(boolean noCache, boolean noStore, int maxAgeSeconds, int sMaxAgeSeconds,
       boolean isPrivate, boolean isPublic, boolean mustRevalidate, int maxStaleSeconds,
-      int minFreshSeconds, boolean onlyIfCached, boolean noTransform, String headerValue) {
+      int minFreshSeconds, boolean onlyIfCached, boolean noTransform, boolean immutable,
+      @Nullable String headerValue) {
     this.noCache = noCache;
     this.noStore = noStore;
     this.maxAgeSeconds = maxAgeSeconds;
@@ -58,6 +72,7 @@ public final class CacheControl {
     this.minFreshSeconds = minFreshSeconds;
     this.onlyIfCached = onlyIfCached;
     this.noTransform = noTransform;
+    this.immutable = immutable;
     this.headerValue = headerValue;
   }
 
@@ -73,22 +88,21 @@ public final class CacheControl {
     this.minFreshSeconds = builder.minFreshSeconds;
     this.onlyIfCached = builder.onlyIfCached;
     this.noTransform = builder.noTransform;
+    this.immutable = builder.immutable;
   }
 
   /**
    * In a response, this field's name "no-cache" is misleading. It doesn't prevent us from caching
    * the response; it only means we have to validate the response with the origin server before
    * returning it. We can do this with a conditional GET.
-   *对应于“no-cache”，如果出现在 响应 的头部，不是表示不允许对响应进行缓存，而是表示客户端需要与服务器进行再次验证，
-   * 进行一个额外的GET请求得到最新的响应；如果出现请求头部，则表示不适用缓存响应，即记性网络请求获取响应。
+   *
    * <p>In a request, it means do not use a cache to satisfy the request.
    */
   public boolean noCache() {
     return noCache;
   }
 
-  /** If true, this response should not be cached.
-   * 对应于"no-store"，如果出现在响应头部，则表明该响应不能被缓存*/
+  /** If true, this response should not be cached. */
   public boolean noStore() {
     return noStore;
   }
@@ -142,6 +156,10 @@ public final class CacheControl {
     return noTransform;
   }
 
+  public boolean immutable() {
+    return immutable;
+  }
+
   /**
    * Returns the cache directives of {@code headers}. This honors both Cache-Control and Pragma
    * headers if they are present.
@@ -158,6 +176,7 @@ public final class CacheControl {
     int minFreshSeconds = -1;
     boolean onlyIfCached = false;
     boolean noTransform = false;
+    boolean immutable = false;
 
     boolean canUseHeaderValue = true;
     String headerValue = null;
@@ -232,6 +251,8 @@ public final class CacheControl {
           onlyIfCached = true;
         } else if ("no-transform".equalsIgnoreCase(directive)) {
           noTransform = true;
+        } else if ("immutable".equalsIgnoreCase(directive)) {
+          immutable = true;
         }
       }
     }
@@ -240,7 +261,8 @@ public final class CacheControl {
       headerValue = null;
     }
     return new CacheControl(noCache, noStore, maxAgeSeconds, sMaxAgeSeconds, isPrivate, isPublic,
-        mustRevalidate, maxStaleSeconds, minFreshSeconds, onlyIfCached, noTransform, headerValue);
+        mustRevalidate, maxStaleSeconds, minFreshSeconds, onlyIfCached, noTransform, immutable,
+        headerValue);
   }
 
   @Override public String toString() {
@@ -261,6 +283,7 @@ public final class CacheControl {
     if (minFreshSeconds != -1) result.append("min-fresh=").append(minFreshSeconds).append(", ");
     if (onlyIfCached) result.append("only-if-cached, ");
     if (noTransform) result.append("no-transform, ");
+    if (immutable) result.append("immutable, ");
     if (result.length() == 0) return "";
     result.delete(result.length() - 2, result.length());
     return result.toString();
@@ -275,6 +298,7 @@ public final class CacheControl {
     int minFreshSeconds = -1;
     boolean onlyIfCached;
     boolean noTransform;
+    boolean immutable;
 
     /** Don't accept an unvalidated cached response. */
     public Builder noCache() {
@@ -294,7 +318,6 @@ public final class CacheControl {
      *
      * @param maxAge a non-negative integer. This is stored and transmitted with {@link
      * TimeUnit#SECONDS} precision; finer precision will be lost.
-     * 对应"max-age"，设置缓存响应的最大存货时间。如果缓存响满足了到了最大存活时间，那么将不会再进行网络请求
      */
     public Builder maxAge(int maxAge, TimeUnit timeUnit) {
       if (maxAge < 0) throw new IllegalArgumentException("maxAge < 0: " + maxAge);
@@ -311,7 +334,6 @@ public final class CacheControl {
      *
      * @param maxStale a non-negative integer. This is stored and transmitted with {@link
      * TimeUnit#SECONDS} precision; finer precision will be lost.
-     *                 对应“max-stale”，缓存响应可以接受的最大过期时间，如果没有指定该参数，那么过期缓存响应将不会被使用
      */
     public Builder maxStale(int maxStale, TimeUnit timeUnit) {
       if (maxStale < 0) throw new IllegalArgumentException("maxStale < 0: " + maxStale);
@@ -329,8 +351,6 @@ public final class CacheControl {
      *
      * @param minFresh a non-negative integer. This is stored and transmitted with {@link
      * TimeUnit#SECONDS} precision; finer precision will be lost.
-     *                 对应"min-fresh"，设置一个响应将会持续刷新最小秒数，
-     *                 如果一个响应当minFresh过去后过期了，那么缓存响应不能被使用，需要重新进行网络请求
      */
     public Builder minFresh(int minFresh, TimeUnit timeUnit) {
       if (minFresh < 0) throw new IllegalArgumentException("minFresh < 0: " + minFresh);
@@ -344,8 +364,6 @@ public final class CacheControl {
     /**
      * Only accept the response if it is in the cache. If the response isn't cached, a {@code 504
      * Unsatisfiable Request} response will be returned.
-     * 对应“onlyIfCached”，用于请求头部，表明该请求只接受缓存中的响应。
-     * 如果缓存中没有响应，那么返回一个状态码为504的响应。
      */
     public Builder onlyIfCached() {
       this.onlyIfCached = true;
@@ -355,6 +373,11 @@ public final class CacheControl {
     /** Don't accept a transformed response. */
     public Builder noTransform() {
       this.noTransform = true;
+      return this;
+    }
+
+    public Builder immutable() {
+      this.immutable = true;
       return this;
     }
 

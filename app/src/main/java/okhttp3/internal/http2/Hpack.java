@@ -22,7 +22,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import okhttp3.internal.Util;
+import java.util.Objects;
 import okio.Buffer;
 import okio.BufferedSource;
 import okio.ByteString;
@@ -221,7 +221,7 @@ final class Hpack {
         headerList.add(staticEntry);
       } else {
         int dynamicTableIndex = dynamicTableIndex(index - STATIC_HEADER_TABLE.length);
-        if (dynamicTableIndex < 0 || dynamicTableIndex > dynamicTable.length - 1) {
+        if (dynamicTableIndex < 0 || dynamicTableIndex >= dynamicTable.length) {
           throw new IOException("Header index too large " + (index + 1));
         }
         headerList.add(dynamicTable[dynamicTableIndex]);
@@ -258,11 +258,16 @@ final class Hpack {
       insertIntoDynamicTable(-1, new Header(name, value));
     }
 
-    private ByteString getName(int index) {
+    private ByteString getName(int index) throws IOException {
       if (isStaticHeader(index)) {
         return STATIC_HEADER_TABLE[index].name;
       } else {
-        return dynamicTable[dynamicTableIndex(index - STATIC_HEADER_TABLE.length)].name;
+        int dynamicTableIndex = dynamicTableIndex(index - STATIC_HEADER_TABLE.length);
+        if (dynamicTableIndex < 0 || dynamicTableIndex >= dynamicTable.length) {
+          throw new IOException("Header index too large " + (index + 1));
+        }
+
+        return dynamicTable[dynamicTableIndex].name;
       }
     }
 
@@ -478,9 +483,9 @@ final class Hpack {
             // it's unnecessary to waste cycles looking at them. This check is built on the
             // observation that the header entries we care about are in adjacent pairs, and we
             // always know the first index of the pair.
-            if (Util.equal(STATIC_HEADER_TABLE[headerNameIndex - 1].value, value)) {
+            if (Objects.equals(STATIC_HEADER_TABLE[headerNameIndex - 1].value, value)) {
               headerIndex = headerNameIndex;
-            } else if (Util.equal(STATIC_HEADER_TABLE[headerNameIndex].value, value)) {
+            } else if (Objects.equals(STATIC_HEADER_TABLE[headerNameIndex].value, value)) {
               headerIndex = headerNameIndex + 1;
             }
           }
@@ -488,8 +493,8 @@ final class Hpack {
 
         if (headerIndex == -1) {
           for (int j = nextHeaderIndex + 1, length = dynamicTable.length; j < length; j++) {
-            if (Util.equal(dynamicTable[j].name, name)) {
-              if (Util.equal(dynamicTable[j].value, value)) {
+            if (Objects.equals(dynamicTable[j].name, name)) {
+              if (Objects.equals(dynamicTable[j].value, value)) {
                 headerIndex = j - nextHeaderIndex + STATIC_HEADER_TABLE.length;
                 break;
               } else if (headerNameIndex == -1) {

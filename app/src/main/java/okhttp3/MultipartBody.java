@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import javax.annotation.Nullable;
 import okhttp3.internal.Util;
 import okio.Buffer;
 import okio.BufferedSink;
@@ -31,34 +32,34 @@ public final class MultipartBody extends RequestBody {
    * need to be bundled in a particular order. Any "multipart" subtypes that an implementation does
    * not recognize must be treated as being of subtype "mixed".
    */
-  public static final MediaType MIXED = MediaType.parse("multipart/mixed");
+  public static final MediaType MIXED = MediaType.get("multipart/mixed");
 
   /**
    * The "multipart/alternative" type is syntactically identical to "multipart/mixed", but the
    * semantics are different. In particular, each of the body parts is an "alternative" version of
    * the same information.
    */
-  public static final MediaType ALTERNATIVE = MediaType.parse("multipart/alternative");
+  public static final MediaType ALTERNATIVE = MediaType.get("multipart/alternative");
 
   /**
    * This type is syntactically identical to "multipart/mixed", but the semantics are different. In
    * particular, in a digest, the default {@code Content-Type} value for a body part is changed from
    * "text/plain" to "message/rfc822".
    */
-  public static final MediaType DIGEST = MediaType.parse("multipart/digest");
+  public static final MediaType DIGEST = MediaType.get("multipart/digest");
 
   /**
    * This type is syntactically identical to "multipart/mixed", but the semantics are different. In
    * particular, in a parallel entity, the order of body parts is not significant.
    */
-  public static final MediaType PARALLEL = MediaType.parse("multipart/parallel");
+  public static final MediaType PARALLEL = MediaType.get("multipart/parallel");
 
   /**
    * The media-type multipart/form-data follows the rules of all multipart MIME data streams as
    * outlined in RFC 2046. In forms, there are a series of fields to be supplied by the user who
    * fills out the form. Each field has a name. Within a given form, the names are unique.
    */
-  public static final MediaType FORM = MediaType.parse("multipart/form-data");
+  public static final MediaType FORM = MediaType.get("multipart/form-data");
 
   private static final byte[] COLONSPACE = {':', ' '};
   private static final byte[] CRLF = {'\r', '\n'};
@@ -73,7 +74,7 @@ public final class MultipartBody extends RequestBody {
   MultipartBody(ByteString boundary, MediaType type, List<Part> parts) {
     this.boundary = boundary;
     this.originalType = type;
-    this.contentType = MediaType.parse(type + "; boundary=" + boundary.utf8());
+    this.contentType = MediaType.get(type + "; boundary=" + boundary.utf8());
     this.parts = Util.immutableList(parts);
   }
 
@@ -119,7 +120,8 @@ public final class MultipartBody extends RequestBody {
    * to awkward operations like measuring the encoded length of header strings, or the
    * length-in-digits of an encoded integer.
    */
-  private long writeOrCountBytes(BufferedSink sink, boolean countBytes) throws IOException {
+  private long writeOrCountBytes(
+      @Nullable BufferedSink sink, boolean countBytes) throws IOException {
     long byteCount = 0L;
 
     Buffer byteCountBuffer = null;
@@ -197,7 +199,7 @@ public final class MultipartBody extends RequestBody {
    * want to have a good chance of things working, please avoid double-quotes, newlines, percent
    * signs, and the like in your field names.
    */
-  static StringBuilder appendQuotedString(StringBuilder target, String key) {
+  static void appendQuotedString(StringBuilder target, String key) {
     target.append('"');
     for (int i = 0, len = key.length(); i < len; i++) {
       char ch = key.charAt(i);
@@ -217,7 +219,6 @@ public final class MultipartBody extends RequestBody {
       }
     }
     target.append('"');
-    return target;
   }
 
   public static final class Part {
@@ -225,7 +226,7 @@ public final class MultipartBody extends RequestBody {
       return create(null, body);
     }
 
-    public static Part create(Headers headers, RequestBody body) {
+    public static Part create(@Nullable Headers headers, RequestBody body) {
       if (body == null) {
         throw new NullPointerException("body == null");
       }
@@ -242,7 +243,7 @@ public final class MultipartBody extends RequestBody {
       return createFormData(name, null, RequestBody.create(null, value));
     }
 
-    public static Part createFormData(String name, String filename, RequestBody body) {
+    public static Part createFormData(String name, @Nullable String filename, RequestBody body) {
       if (name == null) {
         throw new NullPointerException("name == null");
       }
@@ -254,18 +255,22 @@ public final class MultipartBody extends RequestBody {
         appendQuotedString(disposition, filename);
       }
 
-      return create(Headers.of("Content-Disposition", disposition.toString()), body);
+      Headers headers = new Headers.Builder()
+          .addUnsafeNonAscii("Content-Disposition", disposition.toString())
+          .build();
+
+      return create(headers, body);
     }
 
-    final Headers headers;
+    final @Nullable Headers headers;
     final RequestBody body;
 
-    private Part(Headers headers, RequestBody body) {
+    private Part(@Nullable Headers headers, RequestBody body) {
       this.headers = headers;
       this.body = body;
     }
 
-    public Headers headers() {
+    public @Nullable Headers headers() {
       return headers;
     }
 
@@ -308,7 +313,7 @@ public final class MultipartBody extends RequestBody {
     }
 
     /** Add a part to the body. */
-    public Builder addPart(Headers headers, RequestBody body) {
+    public Builder addPart(@Nullable Headers headers, RequestBody body) {
       return addPart(Part.create(headers, body));
     }
 
@@ -318,7 +323,7 @@ public final class MultipartBody extends RequestBody {
     }
 
     /** Add a form data part to the body. */
-    public Builder addFormDataPart(String name, String filename, RequestBody body) {
+    public Builder addFormDataPart(String name, @Nullable String filename, RequestBody body) {
       return addPart(Part.createFormData(name, filename, body));
     }
 

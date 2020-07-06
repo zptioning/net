@@ -15,6 +15,7 @@
  */
 package okhttp3.internal.platform;
 
+import android.os.Build;
 import android.util.Log;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -22,35 +23,42 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.security.NoSuchAlgorithmException;
 import java.security.cert.Certificate;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.util.List;
+import javax.annotation.Nullable;
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.X509TrustManager;
 import okhttp3.Protocol;
 import okhttp3.internal.Util;
+import okhttp3.internal.tls.BasicTrustRootIndex;
 import okhttp3.internal.tls.CertificateChainCleaner;
+import okhttp3.internal.tls.TrustRootIndex;
 
-/** Android 2.3 or better. */
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+/** Android 5+. */
 class AndroidPlatform extends Platform {
   private static final int MAX_LOG_LENGTH = 4000;
 
   private final Class<?> sslParametersClass;
-  private final OptionalMethod<Socket> setUseSessionTickets;
-  private final OptionalMethod<Socket> setHostname;
-
-  // Non-null on Android 5.0+.
-  private final OptionalMethod<Socket> getAlpnSelectedProtocol;
-  private final OptionalMethod<Socket> setAlpnProtocols;
+  private final Class<?> sslSocketClass;
+  private final Method setUseSessionTickets;
+  private final Method setHostname;
+  private final Method getAlpnSelectedProtocol;
+  private final Method setAlpnProtocols;
 
   private final CloseGuard closeGuard = CloseGuard.get();
 
-  public AndroidPlatform(Class<?> sslParametersClass, OptionalMethod<Socket> setUseSessionTickets,
-      OptionalMethod<Socket> setHostname, OptionalMethod<Socket> getAlpnSelectedProtocol,
-      OptionalMethod<Socket> setAlpnProtocols) {
+  AndroidPlatform(Class<?> sslParametersClass, Class<?> sslSocketClass, Method setUseSessionTickets,
+      Method setHostname, Method getAlpnSelectedProtocol, Method setAlpnProtocols) {
     this.sslParametersClass = sslParametersClass;
+    this.sslSocketClass = sslSocketClass;
     this.setUseSessionTickets = setUseSessionTickets;
     this.setHostname = setHostname;
     this.getAlpnSelectedProtocol = getAlpnSelectedProtocol;
@@ -64,16 +72,18 @@ class AndroidPlatform extends Platform {
     } catch (AssertionError e) {
       if (Util.isAndroidGetsocknameError(e)) throw new IOException(e);
       throw e;
-    } catch (SecurityException e) {
-      // Before android 4.3, socket.connect could throw a SecurityException
-      // if opening a socket resulted in an EACCES error.
-      IOException ioException = new IOException("Exception in connect");
-      ioException.initCause(e);
-      throw ioException;
+    } catch (ClassCastException e) {
+      // On android 8.0, socket.connect throws a ClassCastException due to a bug
+      // see https://issuetracker.google.com/issues/63649622
+      if (Build.VERSION.SDK_INT == 26) {
+        throw new IOException("Exception in connect", e);
+      } else {
+        throw e;
+      }
     }
   }
 
-  @Override public X509TrustManager trustManager(SSLSocketFactory sslSocketFactory) {
+  @Override protected @Nullable X509TrustManager trustManager(SSLSocketFactory sslSocketFactory) {
     Object context = readFieldOrNull(sslSocketFactory, sslParametersClass, "sslParameters");
     if (context == null) {
       // If that didn't work, try the Google Play Services SSL provider before giving up. This
@@ -96,29 +106,38 @@ class AndroidPlatform extends Platform {
   }
 
   @Override public void configureTlsExtensions(
-      SSLSocket sslSocket, String hostname, List<Protocol> protocols) {
-    // Enable SNI and session tickets.
-    if (hostname != null) {
-      setUseSessionTickets.invokeOptionalWithoutCheckedException(sslSocket, true);
-      setHostname.invokeOptionalWithoutCheckedException(sslSocket, hostname);
+      SSLSocket sslSocket, String hostname, List<Protocol> protocols) throws IOException {
+    if (!sslSocketClass.isInstance(sslSocket)) {
+      return; // No TLS extensions if the socket class is custom.
     }
+    try {
+      // Enable SNI and session tickets.
+      if (hostname != null) {
+        setUseSessionTickets.invoke(sslSocket, true);
+        // This is SSLParameters.setServerNames() in API 24+.
+        setHostname.invoke(sslSocket, hostname);
+      }
 
-    // Enable ALPN.
-    if (setAlpnProtocols != null && setAlpnProtocols.isSupported(sslSocket)) {
-      Object[] parameters = {concatLengthPrefixed(protocols)};
-      setAlpnProtocols.invokeWithoutCheckedException(sslSocket, parameters);
+      // Enable ALPN.
+      setAlpnProtocols.invoke(sslSocket, concatLengthPrefixed(protocols));
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new AssertionError(e);
     }
   }
 
-  @Override public String getSelectedProtocol(SSLSocket socket) {
-    if (getAlpnSelectedProtocol == null) return null;
-    if (!getAlpnSelectedProtocol.isSupported(socket)) return null;
-
-    byte[] alpnResult = (byte[]) getAlpnSelectedProtocol.invokeWithoutCheckedException(socket);
-    return alpnResult != null ? new String(alpnResult, Util.UTF_8) : null;
+  @Override public @Nullable String getSelectedProtocol(SSLSocket socket) {
+    if (!sslSocketClass.isInstance(socket)) {
+      return null; // No TLS extensions if the socket class is custom.
+    }
+    try {
+      byte[] alpnResult = (byte[]) getAlpnSelectedProtocol.invoke(socket);
+      return alpnResult != null ? new String(alpnResult, UTF_8) : null;
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new AssertionError(e);
+    }
   }
 
-  @Override public void log(int level, String message, Throwable t) {
+  @Override public void log(int level, String message, @Nullable Throwable t) {
     int logLevel = level == WARN ? Log.WARN : Log.DEBUG;
     if (t != null) message = message + '\n' + Log.getStackTraceString(t);
 
@@ -134,7 +153,7 @@ class AndroidPlatform extends Platform {
     }
   }
 
-  @Override public Object getStackTraceForCloseable(String closer) {
+  @Override public @Nullable Object getStackTraceForCloseable(String closer) {
     return closeGuard.createAndOpen(closer);
   }
 
@@ -151,13 +170,33 @@ class AndroidPlatform extends Platform {
       Class<?> networkPolicyClass = Class.forName("android.security.NetworkSecurityPolicy");
       Method getInstanceMethod = networkPolicyClass.getMethod("getInstance");
       Object networkSecurityPolicy = getInstanceMethod.invoke(null);
-      Method isCleartextTrafficPermittedMethod = networkPolicyClass
-          .getMethod("isCleartextTrafficPermitted", String.class);
-      return (boolean) isCleartextTrafficPermittedMethod.invoke(networkSecurityPolicy, hostname);
+      return api24IsCleartextTrafficPermitted(hostname, networkPolicyClass, networkSecurityPolicy);
     } catch (ClassNotFoundException | NoSuchMethodException e) {
       return super.isCleartextTrafficPermitted(hostname);
     } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
-      throw new AssertionError();
+      throw new AssertionError("unable to determine cleartext support", e);
+    }
+  }
+
+  private boolean api24IsCleartextTrafficPermitted(String hostname, Class<?> networkPolicyClass,
+      Object networkSecurityPolicy) throws InvocationTargetException, IllegalAccessException {
+    try {
+      Method isCleartextTrafficPermittedMethod = networkPolicyClass
+          .getMethod("isCleartextTrafficPermitted", String.class);
+      return (boolean) isCleartextTrafficPermittedMethod.invoke(networkSecurityPolicy, hostname);
+    } catch (NoSuchMethodException e) {
+      return api23IsCleartextTrafficPermitted(hostname, networkPolicyClass, networkSecurityPolicy);
+    }
+  }
+
+  private boolean api23IsCleartextTrafficPermitted(String hostname, Class<?> networkPolicyClass,
+      Object networkSecurityPolicy) throws InvocationTargetException, IllegalAccessException {
+    try {
+      Method isCleartextTrafficPermittedMethod = networkPolicyClass
+          .getMethod("isCleartextTrafficPermitted");
+      return (boolean) isCleartextTrafficPermittedMethod.invoke(networkSecurityPolicy);
+    } catch (NoSuchMethodException e) {
+      return super.isCleartextTrafficPermitted(hostname);
     }
   }
 
@@ -174,40 +213,48 @@ class AndroidPlatform extends Platform {
     }
   }
 
-  public static Platform buildIfSupported() {
-    // Attempt to find Android 2.3+ APIs.
-    try {
-      Class<?> sslParametersClass;
-      try {
-        sslParametersClass = Class.forName("org.conscrypt.SSLParametersImpl");
-      } catch (ClassNotFoundException e) {
-        // Older platform before being unbundled.
-        sslParametersClass = Class.forName(
-            "org.apache.harmony.xnet.provider.jsse.SSLParametersImpl");
-      }
-
-      OptionalMethod<Socket> setUseSessionTickets = new OptionalMethod<>(
-          null, "setUseSessionTickets", boolean.class);
-      OptionalMethod<Socket> setHostname = new OptionalMethod<>(
-          null, "setHostname", String.class);
-      OptionalMethod<Socket> getAlpnSelectedProtocol = null;
-      OptionalMethod<Socket> setAlpnProtocols = null;
-
-      // Attempt to find Android 5.0+ APIs.
-      try {
-        Class.forName("android.net.Network"); // Arbitrary class added in Android 5.0.
-        getAlpnSelectedProtocol = new OptionalMethod<>(byte[].class, "getAlpnSelectedProtocol");
-        setAlpnProtocols = new OptionalMethod<>(null, "setAlpnProtocols", byte[].class);
-      } catch (ClassNotFoundException ignored) {
-      }
-
-      return new AndroidPlatform(sslParametersClass, setUseSessionTickets, setHostname,
-          getAlpnSelectedProtocol, setAlpnProtocols);
-    } catch (ClassNotFoundException ignored) {
-      // This isn't an Android runtime.
+  public static @Nullable Platform buildIfSupported() {
+    if (!Platform.isAndroid()) {
+      return null;
     }
 
-    return null;
+    // Attempt to find Android 5+ APIs.
+    Class<?> sslParametersClass;
+    Class<?> sslSocketClass;
+
+    try {
+      sslParametersClass = Class.forName("com.android.org.conscrypt.SSLParametersImpl");
+      sslSocketClass = Class.forName("com.android.org.conscrypt.OpenSSLSocketImpl");
+    } catch (ClassNotFoundException ignored) {
+      return null; // Not an Android runtime.
+    }
+    if (Build.VERSION.SDK_INT >= 21) {
+      try {
+        Method setUseSessionTickets = sslSocketClass.getDeclaredMethod(
+            "setUseSessionTickets", boolean.class);
+        Method setHostname = sslSocketClass.getMethod("setHostname", String.class);
+        Method getAlpnSelectedProtocol = sslSocketClass.getMethod("getAlpnSelectedProtocol");
+        Method setAlpnProtocols = sslSocketClass.getMethod("setAlpnProtocols", byte[].class);
+        return new AndroidPlatform(sslParametersClass, sslSocketClass, setUseSessionTickets,
+            setHostname, getAlpnSelectedProtocol, setAlpnProtocols);
+      } catch (NoSuchMethodException ignored) {
+      }
+    }
+    throw new IllegalStateException(
+        "Expected Android API level 21+ but was " + Build.VERSION.SDK_INT);
+  }
+
+  @Override public TrustRootIndex buildTrustRootIndex(X509TrustManager trustManager) {
+    try {
+      // From org.conscrypt.TrustManagerImpl, we want the method with this signature:
+      // private TrustAnchor findTrustAnchorByIssuerAndSignature(X509Certificate lastCert);
+      Method method = trustManager.getClass().getDeclaredMethod(
+          "findTrustAnchorByIssuerAndSignature", X509Certificate.class);
+      method.setAccessible(true);
+      return new CustomTrustRootIndex(trustManager, method);
+    } catch (NoSuchMethodException e) {
+      return super.buildTrustRootIndex(trustManager);
+    }
   }
 
   /**
@@ -305,6 +352,87 @@ class AndroidPlatform extends Platform {
         warnIfOpenMethod = null;
       }
       return new CloseGuard(getMethod, openMethod, warnIfOpenMethod);
+    }
+  }
+
+  /**
+   * A trust manager for Android applications that customize the trust manager.
+   *
+   * <p>This class exploits knowledge of Android implementation details. This class is potentially
+   * much faster to initialize than {@link BasicTrustRootIndex} because it doesn't need to load and
+   * index trusted CA certificates.
+   */
+  static final class CustomTrustRootIndex implements TrustRootIndex {
+    private final X509TrustManager trustManager;
+    private final Method findByIssuerAndSignatureMethod;
+
+    CustomTrustRootIndex(X509TrustManager trustManager, Method findByIssuerAndSignatureMethod) {
+      this.findByIssuerAndSignatureMethod = findByIssuerAndSignatureMethod;
+      this.trustManager = trustManager;
+    }
+
+    @Override public X509Certificate findByIssuerAndSignature(X509Certificate cert) {
+      try {
+        TrustAnchor trustAnchor = (TrustAnchor) findByIssuerAndSignatureMethod.invoke(
+            trustManager, cert);
+        return trustAnchor != null
+            ? trustAnchor.getTrustedCert()
+            : null;
+      } catch (IllegalAccessException e) {
+        throw new AssertionError("unable to get issues and signature", e);
+      } catch (InvocationTargetException e) {
+        return null;
+      }
+    }
+
+    @Override public boolean equals(Object obj) {
+      if (obj == this) {
+        return true;
+      }
+      if (!(obj instanceof CustomTrustRootIndex)) {
+        return false;
+      }
+      CustomTrustRootIndex that = (CustomTrustRootIndex) obj;
+      return trustManager.equals(that.trustManager)
+          && findByIssuerAndSignatureMethod.equals(that.findByIssuerAndSignatureMethod);
+    }
+
+    @Override public int hashCode() {
+      return trustManager.hashCode() + 31 * findByIssuerAndSignatureMethod.hashCode();
+    }
+  }
+
+  @Override public SSLContext getSSLContext() {
+    boolean tryTls12;
+    try {
+      tryTls12 = (Build.VERSION.SDK_INT >= 16 && Build.VERSION.SDK_INT < 22);
+    } catch (NoClassDefFoundError e) {
+      // Not a real Android runtime; probably RoboVM or MoE
+      // Try to load TLS 1.2 explicitly.
+      tryTls12 = true;
+    }
+
+    if (tryTls12) {
+      try {
+        return SSLContext.getInstance("TLSv1.2");
+      } catch (NoSuchAlgorithmException e) {
+        // fallback to TLS
+      }
+    }
+
+    try {
+      return SSLContext.getInstance("TLS");
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("No TLS provider", e);
+    }
+  }
+
+  static int getSdkInt() {
+    try {
+      return Build.VERSION.SDK_INT;
+    } catch (NoClassDefFoundError ignored) {
+      // fails fatally against robolectric classes
+      return 0;
     }
   }
 }

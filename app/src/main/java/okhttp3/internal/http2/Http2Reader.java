@@ -16,6 +16,7 @@
 package okhttp3.internal.http2;
 
 import java.io.Closeable;
+import java.io.EOFException;
 import java.io.IOException;
 import java.util.List;
 import java.util.logging.Logger;
@@ -67,7 +68,7 @@ final class Http2Reader implements Closeable {
   final Hpack.Reader hpackReader;
 
   /** Creates a frame reader with max header table size of 4096. */
-  public Http2Reader(BufferedSource source, boolean client) {
+  Http2Reader(BufferedSource source, boolean client) {
     this.source = source;
     this.client = client;
     this.continuation = new ContinuationSource(this.source);
@@ -93,7 +94,7 @@ final class Http2Reader implements Closeable {
   public boolean nextFrame(boolean requireSettings, Handler handler) throws IOException {
     try {
       source.require(9); // Frame header size
-    } catch (IOException e) {
+    } catch (EOFException e) {
       return false; // This might be a normal socket close.
     }
 
@@ -199,6 +200,8 @@ final class Http2Reader implements Closeable {
 
   private void readData(Handler handler, int length, byte flags, int streamId)
       throws IOException {
+    if (streamId == 0) throw ioException("PROTOCOL_ERROR: TYPE_DATA streamId == 0");
+
     // TODO: checkState open or half-closed (local) or raise STREAM_CLOSED
     boolean inFinished = (flags & FLAG_END_STREAM) != 0;
     boolean gzipped = (flags & FLAG_COMPRESSED) != 0;
@@ -252,7 +255,7 @@ final class Http2Reader implements Closeable {
     if (length % 6 != 0) throw ioException("TYPE_SETTINGS length %% 6 != 0: %s", length);
     Settings settings = new Settings();
     for (int i = 0; i < length; i += 6) {
-      short id = source.readShort();
+      int id = source.readShort() & 0xFFFF;
       int value = source.readInt();
 
       switch (id) {
@@ -354,7 +357,7 @@ final class Http2Reader implements Closeable {
     int left;
     short padding;
 
-    public ContinuationSource(BufferedSource source) {
+    ContinuationSource(BufferedSource source) {
       this.source = source;
     }
 
@@ -421,7 +424,7 @@ final class Http2Reader implements Closeable {
      * @param associatedStreamId the stream that triggered the sender to create this stream.
      */
     void headers(boolean inFinished, int streamId, int associatedStreamId,
-        List<Header> headerBlock);
+                 List<Header> headerBlock);
 
     void rstStream(int streamId, ErrorCode errorCode);
 
@@ -498,6 +501,6 @@ final class Http2Reader implements Closeable {
      * @param maxAge time in seconds that this alternative is considered fresh.
      */
     void alternateService(int streamId, String origin, ByteString protocol, String host, int port,
-        long maxAge);
+                          long maxAge);
   }
 }

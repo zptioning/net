@@ -20,16 +20,22 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.security.NoSuchAlgorithmException;
+import java.security.Security;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.annotation.Nullable;
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.X509TrustManager;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
+import okhttp3.internal.Util;
 import okhttp3.internal.tls.BasicCertificateChainCleaner;
+import okhttp3.internal.tls.BasicTrustRootIndex;
 import okhttp3.internal.tls.CertificateChainCleaner;
 import okhttp3.internal.tls.TrustRootIndex;
 import okio.Buffer;
@@ -41,7 +47,7 @@ import okio.Buffer;
  *
  * <p>Supported on Android 2.3+.
  *
- * Supported on OpenJDK 7+
+ * <p>Supported on OpenJDK 7+
  *
  * <h3>Session Tickets</h3>
  *
@@ -56,9 +62,9 @@ import okio.Buffer;
  * <p>Supported on Android 5.0+. The APIs were present in Android 4.4, but that implementation was
  * unstable.
  *
- * Supported on OpenJDK 7 and 8 (via the JettyALPN-boot library).
+ * <p>Supported on OpenJDK 8 via the JettyALPN-boot library.
  *
- * Supported on OpenJDK 9 via SSLParameters and SSLSocket features.
+ * <p>Supported on OpenJDK 9+ via SSLParameters and SSLSocket features.
  *
  * <h3>Trust Manager Extraction</h3>
  *
@@ -84,7 +90,7 @@ public class Platform {
     return "OkHttp";
   }
 
-  public X509TrustManager trustManager(SSLSocketFactory sslSocketFactory) {
+  protected @Nullable X509TrustManager trustManager(SSLSocketFactory sslSocketFactory) {
     // Attempt to get the trust manager from an OpenJDK socket factory. We attempt this on all
     // platforms in order to support Robolectric, which mixes classes from both Android and the
     // Oracle JDK. Note that we don't support HTTP/2 or other nice features on Robolectric.
@@ -103,8 +109,8 @@ public class Platform {
    *
    * @param hostname non-null for client-side handshakes; null for server-side handshakes.
    */
-  public void configureTlsExtensions(SSLSocket sslSocket, String hostname,
-      List<Protocol> protocols) {
+  public void configureTlsExtensions(SSLSocket sslSocket, @Nullable String hostname,
+      List<Protocol> protocols) throws IOException {
   }
 
   /**
@@ -115,16 +121,16 @@ public class Platform {
   }
 
   /** Returns the negotiated protocol, or null if no protocol was negotiated. */
-  public String getSelectedProtocol(SSLSocket socket) {
+  public @Nullable String getSelectedProtocol(SSLSocket socket) {
     return null;
   }
 
-  public void connectSocket(Socket socket, InetSocketAddress address,
-      int connectTimeout) throws IOException {
+  public void connectSocket(Socket socket, InetSocketAddress address, int connectTimeout)
+      throws IOException {
     socket.connect(address, connectTimeout);
   }
 
-  public void log(int level, String message, Throwable t) {
+  public void log(int level, String message, @Nullable Throwable t) {
     Level logLevel = level == WARN ? Level.WARNING : Level.INFO;
     logger.log(logLevel, message, t);
   }
@@ -138,7 +144,7 @@ public class Platform {
    * should be used specifically for {@link java.io.Closeable} objects and in conjunction with
    * {@link #logCloseableLeak(String, Object)}.
    */
-  public Object getStackTraceForCloseable(String closer) {
+  public @Nullable Object getStackTraceForCloseable(String closer) {
     if (logger.isLoggable(Level.FINE)) {
       return new Throwable(closer); // These are expensive to allocate.
     }
@@ -164,15 +170,55 @@ public class Platform {
   }
 
   public CertificateChainCleaner buildCertificateChainCleaner(X509TrustManager trustManager) {
-    return new BasicCertificateChainCleaner(TrustRootIndex.get(trustManager));
+    return new BasicCertificateChainCleaner(buildTrustRootIndex(trustManager));
+  }
+
+  public CertificateChainCleaner buildCertificateChainCleaner(SSLSocketFactory sslSocketFactory) {
+    X509TrustManager trustManager = trustManager(sslSocketFactory);
+
+    if (trustManager == null) {
+      throw new IllegalStateException("Unable to extract the trust manager on "
+          + Platform.get()
+          + ", sslSocketFactory is "
+          + sslSocketFactory.getClass());
+    }
+
+    return buildCertificateChainCleaner(trustManager);
+  }
+
+  public static boolean isConscryptPreferred() {
+    // mainly to allow tests to run cleanly
+    if ("conscrypt".equals(Util.getSystemProperty("okhttp.platform", null))) {
+      return true;
+    }
+
+    // check if Provider manually installed
+    String preferredProvider = Security.getProviders()[0].getName();
+    return "Conscrypt".equals(preferredProvider);
   }
 
   /** Attempt to match the host runtime to a capable Platform implementation. */
   private static Platform findPlatform() {
-    Platform android = AndroidPlatform.buildIfSupported();
+    if (isAndroid()) {
+      return findAndroidPlatform();
+    } else {
+      return findJvmPlatform();
+    }
+  }
 
-    if (android != null) {
-      return android;
+  public static boolean isAndroid() {
+    // This explicit check avoids activating in Android Studio with Android specific classes
+    // available when running plugins inside the IDE.
+    return "Dalvik".equals(System.getProperty("java.vm.name"));
+  }
+
+  private static Platform findJvmPlatform() {
+    if (isConscryptPreferred()) {
+      Platform conscrypt = ConscryptPlatform.buildIfSupported();
+
+      if (conscrypt != null) {
+        return conscrypt;
+      }
     }
 
     Platform jdk9 = Jdk9Platform.buildIfSupported();
@@ -181,7 +227,7 @@ public class Platform {
       return jdk9;
     }
 
-    Platform jdkWithJettyBoot = JdkWithJettyBootPlatform.buildIfSupported();
+    Platform jdkWithJettyBoot = Jdk8WithJettyBootPlatform.buildIfSupported();
 
     if (jdkWithJettyBoot != null) {
       return jdkWithJettyBoot;
@@ -189,6 +235,22 @@ public class Platform {
 
     // Probably an Oracle JDK like OpenJDK.
     return new Platform();
+  }
+
+  private static Platform findAndroidPlatform() {
+    Platform android10 = Android10Platform.buildIfSupported();
+
+    if (android10 != null) {
+      return android10;
+    }
+
+    Platform android = AndroidPlatform.buildIfSupported();
+
+    if (android == null) {
+      throw new NullPointerException("No platform found on Android");
+    }
+
+    return android;
   }
 
   /**
@@ -206,13 +268,13 @@ public class Platform {
     return result.readByteArray();
   }
 
-  static <T> T readFieldOrNull(Object instance, Class<T> fieldType, String fieldName) {
+  static @Nullable <T> T readFieldOrNull(Object instance, Class<T> fieldType, String fieldName) {
     for (Class<?> c = instance.getClass(); c != Object.class; c = c.getSuperclass()) {
       try {
         Field field = c.getDeclaredField(fieldName);
         field.setAccessible(true);
         Object value = field.get(instance);
-        if (value == null || !fieldType.isInstance(value)) return null;
+        if (!fieldType.isInstance(value)) return null;
         return fieldType.cast(value);
       } catch (NoSuchFieldException ignored) {
       } catch (IllegalAccessException e) {
@@ -227,5 +289,24 @@ public class Platform {
     }
 
     return null;
+  }
+
+  public SSLContext getSSLContext() {
+    try {
+      return SSLContext.getInstance("TLS");
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("No TLS provider", e);
+    }
+  }
+
+  public TrustRootIndex buildTrustRootIndex(X509TrustManager trustManager) {
+    return new BasicTrustRootIndex(trustManager.getAcceptedIssuers());
+  }
+
+  public void configureSslSocketFactory(SSLSocketFactory socketFactory) {
+  }
+
+  @Override public String toString() {
+    return getClass().getSimpleName();
   }
 }
