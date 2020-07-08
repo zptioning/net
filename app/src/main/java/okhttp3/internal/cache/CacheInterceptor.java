@@ -91,7 +91,9 @@ public final class CacheInterceptor implements Interceptor {
 
     Response networkResponse = null;
     try {
+      /** zp add proceed begin !!!!!!!!!!!!!!! */
       networkResponse = chain.proceed(networkRequest);
+      /** zp add proceed end !!!!!!!!!!!!!!! */
     } finally {
       // If we're crashing on I/O or otherwise, don't leak the cache body.
       if (networkResponse == null && cacheCandidate != null) {

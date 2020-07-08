@@ -139,6 +139,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         throw new ProtocolException("Too many follow-up requests: " + followUpCount);
       }
 
+      // zp add 进入下一轮
       request = followUp;
       priorResponse = response;
     }
@@ -152,13 +153,13 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
    */
   private boolean recover(IOException e, Transmitter transmitter,
       boolean requestSendStarted, Request userRequest) {
-    // The application layer has forbidden retries.
+    // The application layer has forbidden retries. zp add 设置 是否设置了重试
     if (!client.retryOnConnectionFailure()) return false;
 
     // We can't send the request body again.
     if (requestSendStarted && requestIsOneShot(e, userRequest)) return false;
 
-    // This exception is fatal.
+    // This exception is fatal.  zp add 错误是否可以恢复
     if (!isRecoverable(e, requestSendStarted)) return false;
 
     // No more routes to attempt.

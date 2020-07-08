@@ -166,6 +166,7 @@ public final class Transmitter {
       }
     }
 
+    // zp add - coder & decoder 编码解码器 还有一个 可用的连接
     ExchangeCodec codec = exchangeFinder.find(client, chain, doExtensiveHealthChecks);
     Exchange result = new Exchange(this, call, eventListener, exchangeFinder, codec);
 

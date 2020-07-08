@@ -105,8 +105,10 @@ public final class RealConnectionPool {
       @Nullable List<Route> routes, boolean requireMultiplexed) {
     assert (Thread.holdsLock(this));
     for (RealConnection connection : connections) {
-      if (requireMultiplexed && !connection.isMultiplexed()) continue;
-      if (!connection.isEligible(address, routes)) continue;
+      if (requireMultiplexed && !connection.isMultiplexed())
+        continue;
+      if (!connection.isEligible(address, routes))
+        continue;
       transmitter.acquireConnectionNoEvents(connection);
       return true;
     }

@@ -550,6 +550,11 @@ public final class Http2Connection implements Closeable {
     }
   }
 
+  /**
+   * 心跳
+   * @param nowNs
+   * @return
+   */
   public synchronized boolean isHealthy(long nowNs) {
     if (shutdown) return false;
 

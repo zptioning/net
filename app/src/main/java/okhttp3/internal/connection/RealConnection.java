@@ -81,14 +81,14 @@ public final class RealConnection extends Http2Connection.Listener implements Co
 
   // The fields below are initialized by connect() and never reassigned.
 
-  /** The low-level TCP socket. */
+  /** The low-level TCP socket. zp add  tcp 连接*/
   private Socket rawSocket;
 
   /**
    * The application layer socket. Either an {@link SSLSocket} layered over {@link #rawSocket}, or
    * {@link #rawSocket} itself if this connection does not use SSL.
    */
-  private Socket socket;
+  private Socket socket;/** zp add https：TLS   http：tcp连接 */
   private Handshake handshake;
   private Protocol protocol;
   private Http2Connection http2Connection;
@@ -145,6 +145,16 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     return result;
   }
 
+  /**
+   * 建立连接
+   * @param connectTimeout
+   * @param readTimeout
+   * @param writeTimeout
+   * @param pingIntervalMillis
+   * @param connectionRetryEnabled
+   * @param call
+   * @param eventListener
+   */
   public void connect(int connectTimeout, int readTimeout, int writeTimeout,
       int pingIntervalMillis, boolean connectionRetryEnabled, Call call,
       EventListener eventListener) {
@@ -174,14 +184,17 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     while (true) {
       try {
         if (route.requiresTunnel()) {
+          /** zp add  http 转 https */
           connectTunnel(connectTimeout, readTimeout, writeTimeout, call, eventListener);
           if (rawSocket == null) {
             // We were unable to connect the tunnel but properly closed down our resources.
             break;
           }
         } else {
+          /** zp add  创建 tcp socket */
           connectSocket(connectTimeout, readTimeout, call, eventListener);
         }
+        /** zp add 创建 https / http2  连接*/
         establishProtocol(connectionSpecSelector, pingIntervalMillis, call, eventListener);
         eventListener.connectEnd(call, route.socketAddress(), route.proxy(), protocol);
         break;
@@ -232,6 +245,7 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     Request tunnelRequest = createTunnelRequest();
     HttpUrl url = tunnelRequest.url();
     for (int i = 0; i < MAX_TUNNEL_ATTEMPTS; i++) {
+      /** zp add  */
       connectSocket(connectTimeout, readTimeout, call, eventListener);
       tunnelRequest = createTunnel(readTimeout, writeTimeout, tunnelRequest, url);
 
@@ -281,9 +295,19 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     }
   }
 
+  /**
+   * 建立协议
+   * @param connectionSpecSelector
+   * @param pingIntervalMillis
+   * @param call
+   * @param eventListener
+   * @throws IOException
+   */
   private void establishProtocol(ConnectionSpecSelector connectionSpecSelector,
       int pingIntervalMillis, Call call, EventListener eventListener) throws IOException {
     if (route.address().sslSocketFactory() == null) {
+      /** zp add 不需要加密连接*/
+      /** zp add  http2 连接*/
       if (route.address().protocols().contains(Protocol.H2_PRIOR_KNOWLEDGE)) {
         socket = rawSocket;
         protocol = Protocol.H2_PRIOR_KNOWLEDGE;
@@ -291,11 +315,13 @@ public final class RealConnection extends Http2Connection.Listener implements Co
         return;
       }
 
+      /** zp add http 的 直接返回*/
       socket = rawSocket;
       protocol = Protocol.HTTP_1_1;
       return;
     }
 
+    /** zp add 需要加密连接 */
     eventListener.secureConnectStart(call);
     connectTls(connectionSpecSelector);
     eventListener.secureConnectEnd(call, handshake);
@@ -469,6 +495,7 @@ public final class RealConnection extends Http2Connection.Listener implements Co
   /**
    * Returns true if this connection can carry a stream allocation to {@code address}. If non-null
    * {@code route} is the resolved route for a connection.
+   * zp add 域名  端口 协议 代理配置  tls 等都要一样
    */
   boolean isEligible(Address address, @Nullable List<Route> routes) {
     // If this connection is not accepting new exchanges, we're done.
@@ -487,15 +514,19 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     // https://hpbn.co/optimizing-application-delivery/#eliminate-domain-sharding
     // https://daniel.haxx.se/blog/2016/08/18/http2-connection-coalescing/
 
+    // zp add  专门服务 http2   host不一样 ip 一样
     // 1. This connection must be HTTP/2.
     if (http2Connection == null) return false;
 
     // 2. The routes must share an IP address.
-    if (routes == null || !routeMatchesAny(routes)) return false;
+    if (routes == null || !routeMatchesAny(routes))
+      return false;
 
     // 3. This connection's server certificate's must cover the new host.
-    if (address.hostnameVerifier() != OkHostnameVerifier.INSTANCE) return false;
-    if (!supportsUrl(address.url())) return false;
+    if (address.hostnameVerifier() != OkHostnameVerifier.INSTANCE)
+      return false;
+    if (!supportsUrl(address.url()))
+      return false;
 
     // 4. Certificate pinning must match the host.
     try {
@@ -539,6 +570,13 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     return true; // Success. The URL is supported.
   }
 
+  /**
+   * 编码解码器
+   * @param client
+   * @param chain
+   * @return
+   * @throws SocketException
+   */
   ExchangeCodec newCodec(OkHttpClient client, Interceptor.Chain chain) throws SocketException {
     if (http2Connection != null) {
       return new Http2ExchangeCodec(client, this, chain, http2Connection);
