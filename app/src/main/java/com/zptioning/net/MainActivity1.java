@@ -51,7 +51,9 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
     private void initRetrofit() {
         Retrofit retrofit = new Retrofit.Builder()
                 .baseUrl("https://api.github.com/")
+                /* 添加数据 序列化 反序列化 转换工厂 */
                 .addConverterFactory(GsonConverterFactory.create())
+                /* 兼容 RxJava */
                 .addCallAdapterFactory(RxJava2CallAdapterFactory.create())
                 .build();
 
@@ -74,7 +76,7 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
         single.subscribe(new Consumer<List<Repo>>() {
             @Override
             public void accept(List<Repo> repos) throws Throwable {
-
+                Log.i(TAG, "onResponse: " + repos.get(0).getName());
             }
         });
     }

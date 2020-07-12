@@ -86,7 +86,7 @@ abstract class HttpServiceMethod<ResponseT, ReturnT> extends ServiceMethod<Retur
                 createResponseConverter(retrofit, method, responseType);
 
         okhttp3.Call.Factory callFactory = retrofit.callFactory;
-        /* 是不是kotlin挂起方法自动生成的java方法 */
+        /* zp add 是不是kotlin挂起方法自动生成的java方法 */
         if (!isKotlinSuspendFunction) {
             return new CallAdapted<>(requestFactory, callFactory, responseConverter, callAdapter);
         } else if (continuationWantsResponse) {

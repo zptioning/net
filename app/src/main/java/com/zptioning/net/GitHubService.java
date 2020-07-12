@@ -13,7 +13,7 @@ public interface GitHubService {
     @GET("users/{user}/repos")
     Call<List<Repo>> listRepos(@Path("user") String user);
 
+    /* zp add 兼容RxJava */
     @GET("users/{user}/repos")
     Single<List<Repo>> listReposRx(@Path("user") String user);
-
 }
