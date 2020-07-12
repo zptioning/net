@@ -37,5 +37,11 @@ abstract class ServiceMethod<T> {
     return HttpServiceMethod.parseAnnotations(retrofit, method, requestFactory);
   }
 
+  /**
+   * zp add
+   * 实现类 HttpServiceMethod
+   * @param args
+   * @return
+   */
   abstract @Nullable T invoke(Object[] args);
 }

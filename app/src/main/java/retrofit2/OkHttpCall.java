@@ -97,6 +97,7 @@ final class OkHttpCall<T> implements Call<T> {
       failure = creationFailure;
       if (call == null && failure == null) {
         try {
+          /* zp add  c创建一个 okhttp3.Call */
           call = rawCall = createRawCall();
         } catch (Throwable t) {
           throwIfFatal(t);
@@ -114,6 +115,7 @@ final class OkHttpCall<T> implements Call<T> {
       call.cancel();
     }
 
+    /* zp add  okhttp 的 enqueue */
     call.enqueue(new okhttp3.Callback() {
       @Override public void onResponse(okhttp3.Call call, okhttp3.Response rawResponse) {
         Response<T> response;
@@ -196,6 +198,7 @@ final class OkHttpCall<T> implements Call<T> {
     return call;
   }
 
+  /* zp add 解析响应 */
   Response<T> parseResponse(okhttp3.Response rawResponse) throws IOException {
     ResponseBody rawBody = rawResponse.body();
 
@@ -222,6 +225,7 @@ final class OkHttpCall<T> implements Call<T> {
 
     ExceptionCatchingResponseBody catchingBody = new ExceptionCatchingResponseBody(rawBody);
     try {
+      /* zp add  转换 */
       T body = responseConverter.convert(catchingBody);
       return Response.success(body, rawResponse);
     } catch (RuntimeException e) {

@@ -209,6 +209,7 @@ final class RequestFactory {
       return new RequestFactory(this);
     }
 
+    /* zp add 解析注解 */
     private void parseMethodAnnotation(Annotation annotation) {
       if (annotation instanceof DELETE) {
         parseHttpMethodAndPath("DELETE", ((DELETE) annotation).value(), false);

@@ -100,6 +100,7 @@ class Platform {
       super(Build.VERSION.SDK_INT >= 24);
     }
 
+    /* zp add 主线程 */
     @Override public Executor defaultCallbackExecutor() {
       return new MainThreadExecutor();
     }

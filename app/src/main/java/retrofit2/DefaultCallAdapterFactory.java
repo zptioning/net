@@ -52,8 +52,7 @@ final class DefaultCallAdapterFactory extends CallAdapter.Factory {
       }
 
       @Override public Call<Object> adapt(Call<Object> call) {
-        return executor == null
-            ? call
+        return executor == null ? call
             : new ExecutorCallbackCall<>(executor, call);
       }
     };
@@ -61,6 +60,7 @@ final class DefaultCallAdapterFactory extends CallAdapter.Factory {
 
   static final class ExecutorCallbackCall<T> implements Call<T> {
     final Executor callbackExecutor;
+    /* zp add delegate 就是 Okhttp.Call */
     final Call<T> delegate;
 
     ExecutorCallbackCall(Executor callbackExecutor, Call<T> delegate) {
@@ -73,6 +73,7 @@ final class DefaultCallAdapterFactory extends CallAdapter.Factory {
 
       delegate.enqueue(new Callback<T>() {
         @Override public void onResponse(Call<T> call, final Response<T> response) {
+          /* zp add 切线程 */
           callbackExecutor.execute(() -> {
             if (delegate.isCanceled()) {
               // Emulate OkHttp's behavior of throwing/delivering an IOException on cancellation.
