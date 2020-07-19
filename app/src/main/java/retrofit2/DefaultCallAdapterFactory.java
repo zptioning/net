@@ -60,7 +60,7 @@ final class DefaultCallAdapterFactory extends CallAdapter.Factory {
 
   static final class ExecutorCallbackCall<T> implements Call<T> {
     final Executor callbackExecutor;
-    /* zp add delegate 就是 Okhttp.Call */
+    /* zp add delegate 就是 OkHttpCall */
     final Call<T> delegate;
 
     ExecutorCallbackCall(Executor callbackExecutor, Call<T> delegate) {

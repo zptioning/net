@@ -22,6 +22,7 @@ import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.BiConsumer;
 import io.reactivex.rxjava3.functions.Consumer;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import okhttp3.Call;
@@ -73,12 +74,14 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
         });
 
         Single<List<Repo>> single = gitHubService.listReposRx("octocat");
-        single.subscribe(new Consumer<List<Repo>>() {
-            @Override
-            public void accept(List<Repo> repos) throws Throwable {
-                Log.i(TAG, "onResponse: " + repos.get(0).getName());
-            }
-        });
+        single.subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(new BiConsumer<List<Repo>, Throwable>() {
+                    @Override
+                    public void accept(List<Repo> repos, Throwable throwable) throws Throwable {
+                        Log.i(TAG, "onResponse: " + repos.get(0).getName());
+                    }
+                });
     }
 
     private void initConnectivityManager() {
