@@ -28,6 +28,14 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
     final Scheduler scheduler;
     final boolean delayError;
     final int bufferSize;
+
+    /**
+     * zp add
+     * @param source   调 observeOn() 方法 的  observable对象
+     * @param scheduler
+     * @param delayError
+     * @param bufferSize
+     */
     public ObservableObserveOn(ObservableSource<T> source, Scheduler scheduler, boolean delayError, int bufferSize) {
         super(source);
         this.scheduler = scheduler;
@@ -35,14 +43,19 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
         this.bufferSize = bufferSize;
     }
 
+    /**
+     * zp add
+     * @param observer the incoming {@code Observer}, never {@code null}
+     *                 subscribe(observer)  方法的入参
+     */
     @Override
     protected void subscribeActual(Observer<? super T> observer) {
         if (scheduler instanceof TrampolineScheduler) {
             source.subscribe(observer);
         } else {
-            Scheduler.Worker w = scheduler.createWorker();
+            Scheduler.Worker worker = scheduler.createWorker();
 
-            source.subscribe(new ObserveOnObserver<>(observer, w, delayError, bufferSize));
+            source.subscribe(new ObserveOnObserver<>(observer, worker, delayError, bufferSize));
         }
     }
 
@@ -50,6 +63,7 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
     implements Observer<T>, Runnable {
 
         private static final long serialVersionUID = 6576896619930983584L;
+        /** zp add ObservableObserveOn 调 subscribe(observer) 传入的入参 */
         final Observer<? super T> downstream;
         final Scheduler.Worker worker;
         final boolean delayError;

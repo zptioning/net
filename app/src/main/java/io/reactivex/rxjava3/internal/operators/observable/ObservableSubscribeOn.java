@@ -1,11 +1,11 @@
 /**
  * Copyright (c) 2016-present, RxJava Contributors.
- *
+ * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in
  * compliance with the License. You may obtain a copy of the License at
- *
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software distributed under the License is
  * distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See
  * the License for the specific language governing permissions and limitations under the License.
@@ -23,10 +23,15 @@ public final class ObservableSubscribeOn<T> extends AbstractObservableWithUpstre
     final Scheduler scheduler;
 
     public ObservableSubscribeOn(ObservableSource<T> source, Scheduler scheduler) {
+        /* zp add  source: 调用 subscribeOn() 方法的对象 */
         super(source);
         this.scheduler = scheduler;
     }
 
+    /**
+     * zp add 下游的 Observer
+     * @param observer the incoming {@code Observer}, never {@code null}
+     */
     @Override
     public void subscribeActual(final Observer<? super T> observer) {
         final SubscribeOnObserver<T> parent = new SubscribeOnObserver<>(observer);
@@ -36,11 +41,15 @@ public final class ObservableSubscribeOn<T> extends AbstractObservableWithUpstre
         parent.setDisposable(scheduler.scheduleDirect(new SubscribeTask(parent)));
     }
 
-    static final class SubscribeOnObserver<T> extends AtomicReference<Disposable> implements Observer<T>, Disposable {
+    static final class SubscribeOnObserver<T>
+            extends AtomicReference<Disposable>
+            implements Observer<T>, Disposable {
 
         private static final long serialVersionUID = 8094547886072529208L;
+        /* zp add 下游的 observer */
         final Observer<? super T> downstream;
 
+        /* zp add 上游 */
         final AtomicReference<Disposable> upstream;
 
         SubscribeOnObserver(Observer<? super T> downstream) {
@@ -50,6 +59,7 @@ public final class ObservableSubscribeOn<T> extends AbstractObservableWithUpstre
 
         @Override
         public void onSubscribe(Disposable d) {
+            // zp add 设置上游
             DisposableHelper.setOnce(this.upstream, d);
         }
 

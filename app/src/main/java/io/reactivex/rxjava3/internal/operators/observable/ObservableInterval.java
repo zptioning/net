@@ -28,6 +28,13 @@ public final class ObservableInterval extends Observable<Long> {
     final long period;
     final TimeUnit unit;
 
+    /**
+     * zp add
+     * @param initialDelay
+     * @param period
+     * @param unit
+     * @param scheduler
+     */
     public ObservableInterval(long initialDelay, long period, TimeUnit unit, Scheduler scheduler) {
         this.initialDelay = initialDelay;
         this.period = period;
@@ -35,6 +42,11 @@ public final class ObservableInterval extends Observable<Long> {
         this.scheduler = scheduler;
     }
 
+    /**
+     * zp add
+     * @param observer the incoming {@code Observer}, never {@code null}
+     *                 subscribe() 入参
+     */
     @Override
     public void subscribeActual(Observer<? super Long> observer) {
         IntervalObserver is = new IntervalObserver(observer);
@@ -47,7 +59,9 @@ public final class ObservableInterval extends Observable<Long> {
             is.setResource(worker);
             worker.schedulePeriodically(is, initialDelay, period, unit);
         } else {
+            /* zp add 隔段时间执行一次操作 */
             Disposable d = sch.schedulePeriodicallyDirect(is, initialDelay, period, unit);
+            // zp add 设置内部 disposable
             is.setResource(d);
         }
     }
@@ -58,6 +72,7 @@ public final class ObservableInterval extends Observable<Long> {
 
         private static final long serialVersionUID = 346773832286157679L;
 
+        /* zp add subscribe() 方法的入参 */
         final Observer<? super Long> downstream;
 
         long count;
@@ -68,6 +83,7 @@ public final class ObservableInterval extends Observable<Long> {
 
         @Override
         public void dispose() {
+            // zp add 取消内部 disposable
             DisposableHelper.dispose(this);
         }
 
@@ -84,6 +100,7 @@ public final class ObservableInterval extends Observable<Long> {
         }
 
         public void setResource(Disposable d) {
+            /* zp add 只设置一次 */
             DisposableHelper.setOnce(this, d);
         }
     }

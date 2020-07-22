@@ -25,6 +25,11 @@ public final class SingleMap<T, R> extends Single<R> {
 
     final Function<? super T, ? extends R> mapper;
 
+    /**
+     * zp add
+     * @param source  调 map() 方法 的 single  // map(@NonNull Function<? super T, ? extends R> mapper)
+     * @param mapper  mapper 就是 map() 方法的入参
+     */
     public SingleMap(SingleSource<? extends T> source, Function<? super T, ? extends R> mapper) {
         this.source = source;
         this.mapper = mapper;
@@ -37,6 +42,7 @@ public final class SingleMap<T, R> extends Single<R> {
 
     static final class MapSingleObserver<T, R> implements SingleObserver<T> {
 
+        // SingleMap.subscribe() 的入参。 SingleObserver。
         final SingleObserver<? super R> t;
 
         final Function<? super T, ? extends R> mapper;

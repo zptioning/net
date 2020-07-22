@@ -15,15 +15,18 @@ import com.zptioning.net.section03_Clone.TestClone;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
 import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.SingleObserver;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.BiConsumer;
 import io.reactivex.rxjava3.functions.Consumer;
+import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -36,15 +39,16 @@ import retrofit2.converter.gson.GsonConverterFactory;
 
 public class MainActivity1 extends AppCompatActivity implements View.OnClickListener {
     public static final String TAG = "zp_test";
+    private Disposable mDisposable;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         findViewById(R.id.tv_animation).setOnClickListener(this);
-        initRetrofit();
+//        initRetrofit();
 //        initClone();
-        initVolley();
+//        initVolley();
 //        initConnectivityManager();
         initRxjava();
     }
@@ -55,7 +59,7 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
                 /* 添加数据 序列化 反序列化 转换工厂 */
                 .addConverterFactory(GsonConverterFactory.create())
                 /* 兼容 RxJava */
-                .addCallAdapterFactory(RxJava2CallAdapterFactory.create())
+                .addCallAdapterFactory(RxJava2CallAdapterFactory.create()/*.createWithScheduler(Schedulers.io())*/)
                 .build();
 
         GitHubService gitHubService = retrofit.create(GitHubService.class);
@@ -73,15 +77,39 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
             }
         });
 
+
+        /* zp add Rxjava */
         Single<List<Repo>> single = gitHubService.listReposRx("octocat");
-        single.subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new BiConsumer<List<Repo>, Throwable>() {
-                    @Override
-                    public void accept(List<Repo> repos, Throwable throwable) throws Throwable {
-                        Log.i(TAG, "onResponse: " + repos.get(0).getName());
-                    }
-                });
+
+        // 必须切线程 否则 报错
+        @NonNull Single<List<Repo>> listSingle = single.subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread());
+
+        listSingle.subscribe(new SingleObserver<List<Repo>>() {
+            @Override
+            public void onSubscribe(@NonNull Disposable d) {
+                mDisposable = d;
+                // 刚订阅的时候  被调用  在请求前
+                Log.i(TAG + "Rxjava", "onSubscribe: ");
+            }
+
+            @Override
+            public void onSuccess(@NonNull List<Repo> repos) {
+                Log.i(TAG + "Rxjava", "onResponse: " + repos.get(0).getName());
+            }
+
+            @Override
+            public void onError(@NonNull Throwable e) {
+                Log.i(TAG + "Rxjava", "onError: ");
+            }
+        });
+
+        listSingle.subscribe(new BiConsumer<List<Repo>, Throwable>() {
+            @Override
+            public void accept(List<Repo> repos, Throwable throwable) throws Throwable {
+                Log.i(TAG + "Rxjava", "onResponse: " + repos.get(0).getName());
+            }
+        });
     }
 
     private void initConnectivityManager() {
@@ -135,29 +163,120 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
     }
 
     private void initRxjava() {
-        Observable.just(1).observeOn(Schedulers.computation())
-                .subscribeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Observer<Integer>() {
-                    @Override
-                    public void onSubscribe(@NonNull Disposable d) {
+//        /* zp add just */
+//        Single<String> singleJust = Single.just("1");
+//        singleJust.subscribe(new SingleObserver<String>() {
+//            @Override
+//            public void onSubscribe(@NonNull Disposable d) {
+//
+//            }
+//
+//            @Override
+//            public void onSuccess(@NonNull String s) {
+//
+//            }
+//
+//            @Override
+//            public void onError(@NonNull Throwable e) {
+//
+//            }
+//        });
+//
+//        /* zp add map */
+//        @NonNull Single<Integer> singleMap = singleJust.map(new Function<String, Integer>() {
+//            @Override
+//            public Integer apply(String s) throws Throwable {
+//                return Integer.parseInt(s);
+//            }
+//        });
+//
+//        singleMap.subscribe(new SingleObserver<Integer>() {
+//            @Override
+//            public void onSubscribe(@NonNull Disposable d) {
+//
+//            }
+//
+//            @Override
+//            public void onSuccess(@NonNull Integer integer) {
+//
+//            }
+//
+//            @Override
+//            public void onError(@NonNull Throwable e) {
+//
+//            }
+//        });
+//
+//
+//
+//        Observable.just(1).observeOn(Schedulers.computation())
+//                .subscribeOn(AndroidSchedulers.mainThread())
+//                .subscribe(new Observer<Integer>() {
+//                    @Override
+//                    public void onSubscribe(@NonNull Disposable d) {
+//
+//                    }
+//
+//                    @Override
+//                    public void onNext(@NonNull Integer integer) {
+//
+//                    }
+//
+//                    @Override
+//                    public void onError(@NonNull Throwable e) {
+//
+//                    }
+//
+//                    @Override
+//                    public void onComplete() {
+//
+//                    }
+//                });
 
-                    }
+        Observer<String> observerInterval = new Observer<String>() {
+            @Override
+            public void onSubscribe(@NonNull Disposable d) {
 
-                    @Override
-                    public void onNext(@NonNull Integer integer) {
+            }
 
-                    }
+            @Override
+            public void onNext(@NonNull String string) {
 
-                    @Override
-                    public void onError(@NonNull Throwable e) {
+            }
 
-                    }
+            @Override
+            public void onError(@NonNull Throwable e) {
 
-                    @Override
-                    public void onComplete() {
+            }
 
-                    }
-                });
+            @Override
+            public void onComplete() {
+
+            }
+        };
+
+        /* zp add ObservableInterval */
+        Observable<Long> observableInterval
+                = Observable.interval(1, TimeUnit.SECONDS);
+
+        /* zp add ObservableMap */
+        Observable<String> observableMap = observableInterval.map(new Function<Long, String>() {
+            @Override
+            public String apply(Long aLong) throws Throwable {
+                return aLong.toString();
+            }
+        });
+
+        /* zp add ObservableSubscribeOn */
+        Observable<String> ObservableIntervalSubscribeOn =
+                observableMap.subscribeOn(Schedulers.io());
+
+        /* zp add ObservableObserveOn */
+        Observable<String> observableIntervalObserveOn =
+                ObservableIntervalSubscribeOn.observeOn(AndroidSchedulers.mainThread());
+
+        observableIntervalObserveOn
+                .subscribe(observerInterval);
     }
 
     private void initClone() {
@@ -180,5 +299,11 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
                 startActivity(new Intent(this, AnimationActivity.class));
                 break;
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mDisposable.dispose();
     }
 }
