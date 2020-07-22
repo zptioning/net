@@ -1,11 +1,11 @@
 /**
  * Copyright (c) 2016-present, RxJava Contributors.
- *
+ * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in
  * compliance with the License. You may obtain a copy of the License at
- *
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software distributed under the License is
  * distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See
  * the License for the specific language governing permissions and limitations under the License.
@@ -60,7 +60,7 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
     }
 
     static final class ObserveOnObserver<T> extends BasicIntQueueDisposable<T>
-    implements Observer<T>, Runnable {
+            implements Observer<T>, Runnable {
 
         private static final long serialVersionUID = 6576896619930983584L;
         /** zp add ObservableObserveOn 调 subscribe(observer) 传入的入参 */
@@ -176,18 +176,19 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
             }
         }
 
+        /* zp add 走这个 */
         void drainNormal() {
             int missed = 1;
 
             final SimpleQueue<T> q = queue;
-            final Observer<? super T> a = downstream;
+            final Observer<? super T> downStreamTemp = downstream;
 
-            for (;;) {
-                if (checkTerminated(done, q.isEmpty(), a)) {
+            for (; ; ) {
+                if (checkTerminated(done, q.isEmpty(), downStreamTemp)) {
                     return;
                 }
 
-                for (;;) {
+                for (; ; ) {
                     boolean d = done;
                     T v;
 
@@ -198,13 +199,13 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
                         disposed = true;
                         upstream.dispose();
                         q.clear();
-                        a.onError(ex);
+                        downStreamTemp.onError(ex);
                         worker.dispose();
                         return;
                     }
                     boolean empty = v == null;
 
-                    if (checkTerminated(d, empty, a)) {
+                    if (checkTerminated(d, empty, downStreamTemp)) {
                         return;
                     }
 
@@ -212,7 +213,7 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
                         break;
                     }
 
-                    a.onNext(v);
+                    downStreamTemp.onNext(v);
                 }
 
                 missed = addAndGet(-missed);
@@ -225,7 +226,7 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
         void drainFused() {
             int missed = 1;
 
-            for (;;) {
+            for (; ; ) {
                 if (disposed) {
                     return;
                 }
@@ -266,6 +267,7 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
             if (outputFused) {
                 drainFused();
             } else {
+                /* zp add 走这个 */
                 drainNormal();
             }
         }
@@ -295,8 +297,7 @@ public final class ObservableObserveOn<T> extends AbstractObservableWithUpstream
                         a.onError(e);
                         worker.dispose();
                         return true;
-                    } else
-                    if (empty) {
+                    } else if (empty) {
                         disposed = true;
                         a.onComplete();
                         worker.dispose();

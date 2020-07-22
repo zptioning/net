@@ -72,7 +72,8 @@ public final class ObservableMap<T, U> extends AbstractObservableWithUpstream<T,
         @Override
         public U poll() throws Throwable {
             T t = qd.poll();
-            return t != null ? Objects.requireNonNull(mapper.apply(t), "The mapper function returned a null value.") : null;
+            return t != null ? Objects.requireNonNull(mapper.apply(t),
+                    "The mapper function returned a null value.") : null;
         }
     }
 }

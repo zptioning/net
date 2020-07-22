@@ -236,33 +236,34 @@ public class MainActivity1 extends AppCompatActivity implements View.OnClickList
         Observer<String> observerInterval = new Observer<String>() {
             @Override
             public void onSubscribe(@NonNull Disposable d) {
-
+                Log.i("Rxjava-Log", "onSubscribe");
             }
 
             @Override
             public void onNext(@NonNull String string) {
-
+                Log.i("Rxjava-Log", "onNext: " + string);
             }
 
             @Override
             public void onError(@NonNull Throwable e) {
-
+                Log.i("Rxjava-Log", "onError");
             }
 
             @Override
             public void onComplete() {
-
+                Log.i("Rxjava-Log", "onComplete");
             }
         };
 
         /* zp add ObservableInterval */
         Observable<Long> observableInterval
-                = Observable.interval(1, TimeUnit.SECONDS);
+                = Observable.interval(60, TimeUnit.SECONDS);
 
         /* zp add ObservableMap */
         Observable<String> observableMap = observableInterval.map(new Function<Long, String>() {
             @Override
             public String apply(Long aLong) throws Throwable {
+                Log.i("Rxjava-Log", "apply: " + aLong);
                 return aLong.toString();
             }
         });
